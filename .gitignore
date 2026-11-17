@@ -1,0 +1,14 @@
+node_modules/
+dist/
+out/
+*.vsix
+.vscode-test/
+test/integration/.tmp/
+test/integration/.tmp-run.log
+coverage/
+test/.tmp-mini*/
+test/manual-run/userdata*/
+test/manual-run/extensions-dir/
+test/manual-run/*.log
+test/perf/userdata-*/
+test/perf/.tmp/

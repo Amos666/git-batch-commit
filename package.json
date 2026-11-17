@@ -1,0 +1,162 @@
+{
+  "name": "git-batch-commit",
+  "displayName": "Git Batch Commit — IDEA-style Commit Panel",
+  "description": "Batch-select files, review diffs, stage changes and commit across multiple repositories in an IntelliJ IDEA-style panel for VS Code.",
+  "version": "0.0.1",
+  "publisher": "git-batch-commit-dev",
+  "license": "MIT",
+  "private": true,
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "SCM Providers"
+  ],
+  "keywords": [
+    "git",
+    "commit",
+    "batch commit",
+    "intellij",
+    "idea",
+    "staging area",
+    "multi repo"
+  ],
+  "extensionDependencies": [
+    "vscode.git"
+  ],
+  "main": "./dist/extension.js",
+  "activationEvents": [],
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "gitBatchCommit",
+          "title": "Git Batch Commit",
+          "icon": "resources/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "gitBatchCommit": [
+        {
+          "id": "gitBatchCommit.commitPanel",
+          "name": "Commit",
+          "type": "webview"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "gitBatchCommit.refresh",
+        "title": "Refresh",
+        "category": "Git Batch Commit",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "gitBatchCommit.commit",
+        "title": "Commit Staged Changes",
+        "category": "Git Batch Commit"
+      },
+      {
+        "command": "gitBatchCommit.showGitOutput",
+        "title": "Show Git Output",
+        "category": "Git Batch Commit"
+      },
+      {
+        "command": "gitBatchCommit.copyDiagnostics",
+        "title": "Copy Diagnostics",
+        "category": "Git Batch Commit"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "gitBatchCommit.refresh",
+          "when": "view == gitBatchCommit.commitPanel",
+          "group": "navigation"
+        }
+      ]
+    },
+    "keybindings": [
+      {
+        "command": "gitBatchCommit.commit",
+        "key": "ctrl+alt+c",
+        "mac": "cmd+alt+c",
+        "when": "gitBatchCommit.panelFocused"
+      },
+      {
+        "command": "gitBatchCommit.refresh",
+        "key": "ctrl+alt+r",
+        "mac": "cmd+alt+r",
+        "when": "gitBatchCommit.panelFocused"
+      }
+    ],
+    "configuration": {
+      "title": "Git Batch Commit",
+      "properties": {
+        "gitBatchCommit.commit.defaultSelectAll": {
+          "type": "boolean",
+          "default": true,
+          "description": "Select all tracked changes by default when the panel loads."
+        },
+        "gitBatchCommit.commit.selectUntracked": {
+          "type": "boolean",
+          "default": false,
+          "description": "Include untracked files in the default selection."
+        },
+        "gitBatchCommit.commit.clearMessageOnSuccess": {
+          "type": "boolean",
+          "default": true,
+          "description": "Clear the commit message after a successful commit."
+        },
+        "gitBatchCommit.commit.stopOnFirstRepoError": {
+          "type": "boolean",
+          "default": true,
+          "description": "Stop committing remaining repositories when one repository fails."
+        },
+        "gitBatchCommit.commit.refreshDebounceMs": {
+          "type": "number",
+          "default": 250,
+          "description": "Debounce interval for status change events pushed to the panel."
+        },
+        "gitBatchCommit.diff.largeFileThresholdKB": {
+          "type": "number",
+          "default": 2048,
+          "description": "Warn before opening diffs of files larger than this size (KB). Binary files are always guarded."
+        },
+        "gitBatchCommit.log.pageSize": {
+          "type": "number",
+          "default": 50,
+          "minimum": 10,
+          "maximum": 500,
+          "description": "Number of commits fetched per page in the commit log view."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "node esbuild.mjs",
+    "watch": "node esbuild.mjs --watch",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:integration": "node test/integration/runTests.mjs",
+    "package": "npm run build -- --production && vsce package --no-dependencies"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "zustand": "^4.5.5"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "@types/react": "^18.3.3",
+    "@types/react-dom": "^18.3.0",
+    "@types/vscode": "^1.85.0",
+    "@vscode/test-electron": "^2.4.1",
+    "@vscode/vsce": "^3.2.1",
+    "esbuild": "^0.24.0",
+    "typescript": "^5.6.3",
+    "vitest": "^2.1.9"
+  }
+}

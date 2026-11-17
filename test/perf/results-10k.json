@@ -1,0 +1,21 @@
+{
+  "label": "10k",
+  "budgets": {},
+  "coldFirstScreenMs": 3715,
+  "heapAfterRenderMB": 13,
+  "builtInRefreshMs": 1413,
+  "singleFileRefreshMs": 2393,
+  "ourPipelineAfterBuiltInMs": 980,
+  "extHostLagDuringRefreshMs": 3,
+  "stage100Ms": 51,
+  "commitResultMs": 2149,
+  "commitFullFeedbackMs": 2150,
+  "stageAll10kMs": 28,
+  "logFirstScreen300Ms": 53,
+  "longTasksMs": [
+    79,
+    88,
+    53
+  ],
+  "heapFinalMB": 30
+}

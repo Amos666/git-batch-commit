@@ -1,0 +1,18 @@
+{
+  "label": "50k",
+  "budgets": {},
+  "coldFirstScreenMs": 11816,
+  "heapAfterRenderMB": 36,
+  "builtInRefreshMs": 6825,
+  "singleFileRefreshMs": 6996,
+  "ourPipelineAfterBuiltInMs": 171,
+  "extHostLagDuringRefreshMs": 4,
+  "heapAfterScrollMB": 53,
+  "longTasksMs": [
+    104,
+    149,
+    97,
+    112
+  ],
+  "heapFinalMB": 53
+}
