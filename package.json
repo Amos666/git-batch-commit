@@ -2,7 +2,7 @@
   "name": "git-batch-commit",
   "displayName": "Git Batch Commit — IDEA-style Commit Panel",
   "description": "Batch-select files, review diffs, stage changes and commit across multiple repositories in an IntelliJ IDEA-style panel for VS Code.",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "publisher": "git-batch-commit-dev",
   "repository": {
     "type": "git",

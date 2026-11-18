@@ -24,10 +24,19 @@ function refsForTarget(target: MenuTarget, s: PanelStore): { repoId: string; pat
     case 'dir':
       return target.paths.map((path) => ({ repoId: target.repoId, path }));
     case 'unversioned': {
-      const status = s.repos[target.repoId];
-      return (status?.changes ?? [])
-        .filter((c) => c.kind === 'untracked' && !c.conflicted)
-        .map((c) => ({ repoId: target.repoId, path: c.path }));
+      const pool = target.repoId ? [s.repos[target.repoId]] : Object.values(s.repos);
+      const refs: { repoId: string; path: string }[] = [];
+      for (const status of pool) {
+        if (!status) {
+          continue;
+        }
+        for (const c of status.changes) {
+          if (c.kind === 'untracked' && !c.conflicted) {
+            refs.push({ repoId: status.repo.id, path: c.path });
+          }
+        }
+      }
+      return refs;
     }
     default:
       return [];

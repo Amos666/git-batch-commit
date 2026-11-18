@@ -142,6 +142,13 @@ describe('buildRows staging mode', () => {
     expect(rows[0]).toMatchObject({ kind: 'repo', key: 'repo:r1', repoId: 'r1', total: 0, checked: 0, selectable: true });
     expect(rows[1]).toEqual({ kind: 'empty', key: 'empty:r1', repoId: 'r1' });
   });
+
+  it('renders compressed directory chains as single dir rows', () => {
+    const rows = buildRows(input({ repos: { r1: status('r1', [change('a/b/c/d/File.java')]) } }));
+    const dirs = rows.filter((r) => r.kind === 'node' && r.node.type === 'dir');
+    expect(dirs.map((r) => (r.kind === 'node' ? r.node.name : ''))).toEqual(['a/b/c/d']);
+    expect(dirs[0]?.kind === 'node' && dirs[0].checkedCount).toBe(0);
+  });
 });
 
 describe('buildRows changelist mode', () => {
@@ -227,12 +234,12 @@ describe('buildRows changelist mode', () => {
     const repoRows = rows.filter((r) => r.kind === 'repo' && r.key.startsWith('cl:default:'));
     expect(repoRows.map((r) => (r.kind === 'repo' ? r.repoId : ''))).toEqual(['r1', 'r2']);
     const z = rows.find((r) => r.kind === 'node' && r.node.path === 'z.txt');
-    expect(z?.kind === 'node' && z.depth).toBe(1);
+    expect(z?.kind === 'node' && z.depth).toBe(2);
   });
 
   it('headerKeys returns exactly the collapsible headers', () => {
     const keys = headerKeys(input({ repos, mode: 'changelist', changelists: lists }));
-    expect(keys).toEqual(['mcrepo:r1', 'mc:r1', 'cl:default', 'cl:default:r1', 'cl:other', 'uvrepo:r1', 'uv:r1']);
+    expect(keys).toEqual(['mc', 'mcrepo:r1', 'cl:default', 'cl:default:r1', 'cl:other', 'uv', 'uvrepo:r1']);
   });
 });
 
@@ -316,8 +323,8 @@ describe('project (repo) rows in multi-repo workspaces', () => {
       collapsed: { 'mcrepo:r1': true, 'cl:default:r1': true, 'uvrepo:r1': true },
     }));
     expect(rows.some((r) => r.key === 'mcrepo:r1')).toBe(true);
-    expect(rows.some((r) => r.key === 'mc:r1')).toBe(false);
-    expect(rows.some((r) => r.key === 'uv:r1')).toBe(false);
+    expect(rows.some((r) => r.key === 'mc')).toBe(true);
+    expect(rows.some((r) => r.key === 'uv')).toBe(true);
     expect(rows.some((r) => r.kind === 'node' && r.repoId === 'r1')).toBe(false);
     expect(rows.some((r) => r.kind === 'node' && r.node.path === 'z.txt')).toBe(true);
   });
@@ -328,5 +335,41 @@ describe('project (repo) rows in multi-repo workspaces', () => {
     expect(keys).toContain('repo:r2');
     const rows = buildRows(input({ ...multi, collapsed: Object.fromEntries(keys.map((k) => [k, true])) }));
     expect(rows.every((r) => r.kind === 'repo')).toBe(true);
+  });
+
+  it('Merge Conflicts is one workspace-wide header with project sub-nodes', () => {
+    const rows = buildRows(input({ ...multi, mode: 'changelist', changelists: changelists() }));
+    const mc = rows.filter((r) => r.kind === 'group' && r.group === 'conflicts');
+    expect(mc).toHaveLength(1);
+    expect(mc[0]).toMatchObject({ key: 'mc', repoId: '', depth: 0, total: 1, checked: 0, refs: [] });
+    const mcRepos = rows.filter((r) => r.kind === 'repo' && r.key.startsWith('mcrepo:'));
+    expect(mcRepos.map((r) => (r.kind === 'repo' ? r.repoId : ''))).toEqual(['r1']);
+    expect(mcRepos[0]).toMatchObject({ depth: 1, selectable: false });
+  });
+
+  it('Unversioned Files is one workspace-wide header aggregating all projects', () => {
+    const rows = buildRows(input({
+      ...multi,
+      mode: 'changelist',
+      changelists: { ...changelists(), unversionedChecked: [{ repoId: 'r1', path: 'new.txt' }] },
+    }));
+    const uv = rows.filter((r) => r.kind === 'group' && r.group === 'unversioned');
+    expect(uv).toHaveLength(1);
+    expect(uv[0]).toMatchObject({ key: 'uv', repoId: '', depth: 0, total: 1, checked: 1 });
+    expect(uv[0]?.kind === 'group' && uv[0].refs).toEqual([{ repoId: 'r1', path: 'new.txt' }]);
+    const uvRepos = rows.filter((r) => r.kind === 'repo' && r.key.startsWith('uvrepo:'));
+    expect(uvRepos.map((r) => (r.kind === 'repo' ? r.repoId : ''))).toEqual(['r1']);
+    expect(uvRepos[0]).toMatchObject({ depth: 1, selectable: true, total: 1, checked: 1 });
+    const uvFiles = rows.filter((r) => r.kind === 'node' && r.keyPrefix === 'uv:r1');
+    expect(uvFiles.map((r) => (r.kind === 'node' ? r.node.path : ''))).toEqual(['new.txt']);
+    expect(uvFiles[0]?.kind === 'node' && uvFiles[0].depth).toBe(2);
+  });
+
+  it('collapsing the global headers hides all their project sub-nodes', () => {
+    const rows = buildRows(input({ ...multi, mode: 'changelist', changelists: changelists(), collapsed: { mc: true, uv: true } }));
+    expect(rows.some((r) => r.key === 'mc')).toBe(true);
+    expect(rows.some((r) => r.key === 'uv')).toBe(true);
+    expect(rows.some((r) => r.kind === 'repo' && (r.key.startsWith('mcrepo:') || r.key.startsWith('uvrepo:')))).toBe(false);
+    expect(rows.some((r) => r.kind === 'node')).toBe(false);
   });
 });

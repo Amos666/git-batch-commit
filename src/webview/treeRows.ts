@@ -12,6 +12,7 @@ export type Row =
       kind: 'repo';
       key: string;
       repoId: string;
+      depth: number;
       total: number;
       checked: number;
       selectable: boolean;
@@ -28,7 +29,17 @@ export type Row =
       total: number;
       checked: number;
     }
-  | { kind: 'group'; key: string; group: GroupId; repoId: string; total: number; checked: number }
+  | {
+      kind: 'group';
+      key: string;
+      group: GroupId;
+      /** '' for workspace-wide headers (Merge Conflicts / Unversioned Files) */
+      repoId: string;
+      depth: number;
+      total: number;
+      checked: number;
+      refs: { repoId: string; path: string }[];
+    }
   | {
       kind: 'node';
       key: string;
@@ -174,29 +185,30 @@ export function buildRows(input: RowInput): Row[] {
     }
     const isIncluded = (c: FileChange): boolean => checkedKeys.has(refKey(c.repoId, c.path));
 
-    // Merge Conflicts pseudo-group first (never assignable)
-    for (const status of statuses) {
-      const conflicts = status.changes.filter((c) => c.conflicted);
-      if (conflicts.length === 0) {
-        continue;
-      }
-      const key = `mc:${status.repo.id}`;
-      const repoKey = `mcrepo:${status.repo.id}`;
-      rows.push({
-        kind: 'repo',
-        key: repoKey,
-        repoId: status.repo.id,
-        total: conflicts.length,
-        checked: 0,
-        selectable: false,
-        refs: [],
-      });
-      if (collapsed[repoKey]) {
-        continue;
-      }
-      rows.push({ kind: 'group', key, group: 'conflicts', repoId: status.repo.id, total: conflicts.length, checked: 0 });
-      if (!collapsed[key]) {
-        pushTree(conflicts, status.repo.id, key, 'worktree', () => false, () => undefined, 1);
+    // Merge Conflicts: one workspace-wide header with project sub-nodes (never assignable)
+    const conflictEntries = statuses
+      .map((status) => ({ status, conflicts: status.changes.filter((c) => c.conflicted) }))
+      .filter((e) => e.conflicts.length > 0);
+    if (conflictEntries.length > 0) {
+      const total = conflictEntries.reduce((n, e) => n + e.conflicts.length, 0);
+      rows.push({ kind: 'group', key: 'mc', group: 'conflicts', repoId: '', depth: 0, total, checked: 0, refs: [] });
+      if (!collapsed['mc']) {
+        for (const { status, conflicts } of conflictEntries) {
+          const repoKey = `mcrepo:${status.repo.id}`;
+          rows.push({
+            kind: 'repo',
+            key: repoKey,
+            repoId: status.repo.id,
+            depth: 1,
+            total: conflicts.length,
+            checked: 0,
+            selectable: false,
+            refs: [],
+          });
+          if (!collapsed[repoKey]) {
+            pushTree(conflicts, status.repo.id, `mc:${status.repo.id}`, 'worktree', () => false, () => undefined, 2);
+          }
+        }
       }
     }
 
@@ -240,6 +252,7 @@ export function buildRows(input: RowInput): Row[] {
           kind: 'repo',
           key: repoKey,
           repoId: status.repo.id,
+          depth: 1,
           total: changes.length,
           checked: changes.filter(isIncluded).length,
           selectable: true,
@@ -255,41 +268,48 @@ export function buildRows(input: RowInput): Row[] {
           'head',
           isIncluded,
           (c) => list.partial[refKey(c.repoId, c.path)],
-          1,
+          2,
         );
       }
     }
 
+    // Unversioned Files: one workspace-wide header with project sub-nodes
     if (viewOptions.showUnversioned) {
-      for (const status of statuses) {
-        const unversioned = status.changes.filter((c) => c.kind === 'untracked' && !c.conflicted);
-        if (unversioned.length === 0) {
-          continue;
-        }
-        const key = `uv:${status.repo.id}`;
-        const repoKey = `uvrepo:${status.repo.id}`;
-        rows.push({
-          kind: 'repo',
-          key: repoKey,
-          repoId: status.repo.id,
-          total: unversioned.length,
-          checked: unversioned.filter(isIncluded).length,
-          selectable: true,
-          refs: unversioned.map((c) => ({ repoId: status.repo.id, path: c.path })),
-        });
-        if (collapsed[repoKey]) {
-          continue;
-        }
+      const uvEntries = statuses
+        .map((status) => ({
+          status,
+          unversioned: status.changes.filter((c) => c.kind === 'untracked' && !c.conflicted),
+        }))
+        .filter((e) => e.unversioned.length > 0);
+      if (uvEntries.length > 0) {
+        const all = uvEntries.flatMap((e) => e.unversioned);
         rows.push({
           kind: 'group',
-          key,
+          key: 'uv',
           group: 'unversioned',
-          repoId: status.repo.id,
-          total: unversioned.length,
-          checked: unversioned.filter(isIncluded).length,
+          repoId: '',
+          depth: 0,
+          total: all.length,
+          checked: all.filter(isIncluded).length,
+          refs: all.map((c) => ({ repoId: c.repoId, path: c.path })),
         });
-        if (!collapsed[key]) {
-          pushTree(unversioned, status.repo.id, key, 'head', isIncluded, () => undefined, 1);
+        if (!collapsed['uv']) {
+          for (const { status, unversioned } of uvEntries) {
+            const repoKey = `uvrepo:${status.repo.id}`;
+            rows.push({
+              kind: 'repo',
+              key: repoKey,
+              repoId: status.repo.id,
+              depth: 1,
+              total: unversioned.length,
+              checked: unversioned.filter(isIncluded).length,
+              selectable: true,
+              refs: unversioned.map((c) => ({ repoId: status.repo.id, path: c.path })),
+            });
+            if (!collapsed[repoKey]) {
+              pushTree(unversioned, status.repo.id, `uv:${status.repo.id}`, 'head', isIncluded, () => undefined, 2);
+            }
+          }
         }
       }
     }
@@ -305,6 +325,7 @@ export function buildRows(input: RowInput): Row[] {
       kind: 'repo',
       key: repoKey,
       repoId: status.repo.id,
+      depth: 0,
       total: selectable.length,
       checked: selectable.filter((c) => c.staged).length,
       selectable: true,
@@ -331,11 +352,13 @@ export function buildRows(input: RowInput): Row[] {
         key,
         group,
         repoId: status.repo.id,
+        depth: 1,
         total: changes.length,
         checked: changes.filter((c) => c.staged).length,
+        refs: changes.map((c) => ({ repoId: status.repo.id, path: c.path })),
       });
       if (!collapsed[key]) {
-        pushTree(changes, status.repo.id, key, GROUP_SIDES[group], (c) => c.staged, () => undefined, 1);
+        pushTree(changes, status.repo.id, key, GROUP_SIDES[group], (c) => c.staged, () => undefined, 2);
       }
     }
   }

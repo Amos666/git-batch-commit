@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { RepoStatus } from '../../../protocol/models';
 import { STRINGS } from '../../strings/en';
 import { usePanelStore } from '../../state/StoreContext';
-import { buildRows, groupChanges } from '../../treeRows';
+import { buildRows } from '../../treeRows';
 import type { GroupId, Row } from '../../treeRows';
 import { Icon } from '../../theme/icons/Icon';
 import { Checkbox } from '../primitives';
@@ -28,6 +28,7 @@ function RepoRow({ row, status }: { row: Extract<Row, { kind: 'repo' }>; status:
   return (
     <div
       className="gbc-vrow gbc-reporow"
+      style={{ paddingLeft: 4 + row.depth * 16 }}
       data-testid="repo-row"
       data-repo={status.repo.id}
       role="treeitem"
@@ -68,18 +69,17 @@ function GroupHeader({ row }: { row: Extract<Row, { kind: 'group' }> }) {
   const collapsed = usePanelStore((s) => s.collapsed[row.key]);
   const setIncluded = usePanelStore((s) => s.setIncluded);
   const openContextMenu = usePanelStore((s) => s.openContextMenu);
-  const status = usePanelStore((s) => s.repos[row.repoId]);
   const isConflicts = row.group === 'conflicts';
   const toggleAll = (target: boolean): void => {
-    if (!status || isConflicts) {
+    if (isConflicts) {
       return;
     }
-    const refs = groupChanges(status, row.group).map((c) => ({ repoId: row.repoId, path: c.path }));
-    void setIncluded(refs, target);
+    void setIncluded(row.refs, target);
   };
   return (
     <div
       className={`gbc-vrow gbc-grouprow gbc-group-${row.group}`}
+      style={{ paddingLeft: 4 + row.depth * 16 }}
       data-testid={`group-${row.group}`}
       data-repo={row.repoId}
       role="treeitem"

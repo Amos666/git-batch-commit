@@ -54,17 +54,36 @@ export function buildTree(changes: FileChange[]): TreeNode[] {
     });
   }
 
+  // IDEA-style compact directories: a chain of dirs where each level has
+  // exactly one child (a dir) renders as one row "a/b/c/d".
+  const compressChain = (node: TreeNode): TreeNode => {
+    let cur = node;
+    let name = node.name;
+    for (;;) {
+      const only = cur.children.length === 1 ? cur.children[0] : undefined;
+      if (!only || only.type !== 'dir') {
+        break;
+      }
+      cur = only;
+      name += `/${only.name}`;
+    }
+    return cur === node ? node : { ...cur, name };
+  };
+
   const finalize = (node: TreeNode): void => {
     if (node.type === 'file') {
       return;
     }
+    for (const child of node.children) {
+      finalize(child);
+    }
+    node.children = node.children.map((c) => (c.type === 'dir' ? compressChain(c) : c));
     node.children.sort((a, b) =>
       a.type === b.type ? a.name.localeCompare(b.name) : a.type === 'dir' ? -1 : 1,
     );
     let total = 0;
     let staged = 0;
     for (const child of node.children) {
-      finalize(child);
       total += child.total;
       staged += child.staged;
     }

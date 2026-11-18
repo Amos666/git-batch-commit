@@ -83,3 +83,40 @@ describe('collectPaths', () => {
     expect(src && collectPaths(src)).toEqual(['src/deep/b.ts', 'src/a.ts']);
   });
 });
+
+describe('directory chain compression (IDEA compact dirs)', () => {
+  it('merges single-child dir chains into one row', () => {
+    const tree = buildTree([change('a/b/c/d/File.java', false)]);
+    expect(tree.map((n) => `${n.type}:${n.name}:${n.path}`)).toEqual(['dir:a/b/c/d:a/b/c/d']);
+    expect(tree[0]?.children.map((n) => n.name)).toEqual(['File.java']);
+    expect(tree[0]?.total).toBe(1);
+  });
+
+  it('breaks the chain where a dir holds files or multiple children', () => {
+    const tree = buildTree([change('a/b/keep.txt', false), change('a/b/c/d/File.java', false)]);
+    expect(tree.map((n) => n.name)).toEqual(['a/b']);
+    expect(tree[0]?.children.map((n) => `${n.type}:${n.name}`)).toEqual(['dir:c/d', 'file:keep.txt']);
+  });
+
+  it('compresses chains below a branching dir independently', () => {
+    const tree = buildTree([change('src/x/y/one.txt', false), change('src/p/q/two.txt', false)]);
+    expect(tree.map((n) => n.name)).toEqual(['src']);
+    expect(tree[0]?.children.map((n) => n.name)).toEqual(['p/q', 'x/y']);
+  });
+
+  it('does not merge a dir whose only child is a file', () => {
+    const tree = buildTree([change('a/b.txt', false)]);
+    expect(tree.map((n) => n.name)).toEqual(['a']);
+    expect(tree[0]?.children.map((n) => n.name)).toEqual(['b.txt']);
+  });
+
+  it('collapsed key uses the merged path', () => {
+    const rows = flattenTree(buildTree([change('a/b/c/f.txt', false)]), { 'p:a/b/c': true }, 'p');
+    expect(rows.map((r) => r.node.path)).toEqual(['a/b/c']);
+  });
+
+  it('collectPaths spans the merged chain', () => {
+    const tree = buildTree([change('a/b/c/f.txt', false), change('a/b/c/g.txt', true)]);
+    expect(tree[0] && collectPaths(tree[0])).toEqual(['a/b/c/f.txt', 'a/b/c/g.txt']);
+  });
+});
