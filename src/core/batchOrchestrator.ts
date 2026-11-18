@@ -2,12 +2,18 @@ import { asGitErrorLike } from '../adapter/gitApiTypes';
 import { RepoRegistry } from '../adapter/repoRegistry';
 import { mapGitErrorCode, makeError } from '../protocol/errors';
 import type { ProtocolError } from '../protocol/errors';
-import type { CommitRequest, CommitResult } from '../protocol/models';
+import type { CommitRequestV2, CommitResult } from '../protocol/models';
+import { CommitTranslator } from './commitTranslator';
+import type { TranslationState } from './commitTranslator';
 import { InclusionModel } from './inclusionModel';
 import { OperationTracker } from './operationTracker';
 
 export interface OrchestratorOptions {
   stopOnFirstRepoError: boolean;
+  /** changelist mode: asked before unstaging index entries outside the checked set */
+  confirmIndexExclusion?: (repoId: string, paths: string[]) => Promise<boolean>;
+  /** changelist mode: post-commit list cleanup */
+  onCommitted?: (repoId: string, req: CommitRequestV2) => void;
 }
 
 export class BatchOrchestrator {
@@ -17,8 +23,10 @@ export class BatchOrchestrator {
   constructor(
     private readonly registry: RepoRegistry,
     private readonly inclusion: InclusionModel,
+    private readonly translator: CommitTranslator,
     private readonly tracker: OperationTracker,
     private readonly options: () => OrchestratorOptions,
+    private readonly metric?: (name: string, ms: number) => void,
   ) {}
 
   cancelRemaining(): void {
@@ -31,12 +39,12 @@ export class BatchOrchestrator {
     return this.running;
   }
 
-  async run(req: CommitRequest): Promise<CommitResult[]> {
+  async run(req: CommitRequestV2): Promise<CommitResult[]> {
     if (this.running) {
-      throw makeError('GENERIC', '已有提交正在进行，请等待完成');
+      throw makeError('GENERIC', 'A commit is already in progress; wait for it to finish');
     }
-    if (!req.message.trim() && !req.amend) {
-      throw makeError('EMPTY_MESSAGE', '提交消息为空');
+    if (!req.message.trim() && !req.options.amend) {
+      throw makeError('EMPTY_MESSAGE', 'Commit message is empty');
     }
     this.running = true;
     this.cancelRemainingFlag = false;
@@ -58,7 +66,7 @@ export class BatchOrchestrator {
           stopped = true;
         }
       }
-      if (req.pushAfter && results.every((r) => r.ok)) {
+      if (req.options.pushAfter && results.every((r) => r.ok)) {
         for (const result of results) {
           if (this.cancelRemainingFlag) {
             result.skipped = 'cancelled';
@@ -75,34 +83,50 @@ export class BatchOrchestrator {
     }
   }
 
-  private async commitOne(repoId: string, req: CommitRequest): Promise<CommitResult> {
+  private async commitOne(repoId: string, req: CommitRequestV2): Promise<CommitResult> {
     const started = Date.now();
     const repo = this.registry.get(repoId);
     if (!repo) {
-      return { repoId, ok: false, error: makeError('NO_REPOSITORY', `仓库不存在: ${repoId}`), durationMs: 0 };
+      return { repoId, ok: false, error: makeError('NO_REPOSITORY', `Repository not found: ${repoId}`), durationMs: 0 };
     }
-    this.tracker.start(repoId, req.pushAfter ? 'commitAndPush' : 'commit');
+    this.tracker.start(repoId, req.options.pushAfter ? 'commitAndPush' : 'commit');
+    const tx: TranslationState = { indexModified: false };
     try {
       if (repo.state.mergeChanges.length > 0) {
-        throw makeError('CONFLICT', '存在未解决的冲突，无法提交', ['openMergeEditor', 'showGitOutput']);
+        throw makeError('CONFLICT', 'Unresolved conflicts exist; commit is not possible', ['openMergeEditor', 'showGitOutput']);
       }
-      const expected = req.expectedStaged?.[repoId];
-      if (expected) {
-        const mismatch = this.inclusion.validateExpectedStaged(repoId, expected);
-        if (mismatch) {
-          throw mismatch;
+      const included = req.expectedIncluded?.[repoId];
+      if (included && included.length > 0) {
+        const tTranslate = Date.now();
+        await this.translator.translate(repoId, included, {
+          confirmExclusion: (paths) => this.options().confirmIndexExclusion?.(repoId, paths) ?? Promise.resolve(true),
+          tx,
+        });
+        this.metric?.('commit.translate', Date.now() - tTranslate);
+      } else if (included && !req.options.amend) {
+        throw makeError('NO_CHANGES', 'Nothing checked to commit');
+      } else if (!included) {
+        const expected = req.expectedStaged?.[repoId];
+        if (expected) {
+          const mismatch = this.inclusion.validateExpectedStaged(repoId, expected);
+          if (mismatch) {
+            throw mismatch;
+          }
+        }
+        if (repo.state.indexChanges.length === 0 && !req.options.amend) {
+          throw makeError('NO_CHANGES', 'Nothing staged to commit (check files to stage them)');
         }
       }
-      if (repo.state.indexChanges.length === 0 && !req.amend) {
-        throw makeError('NO_CHANGES', '暂存区为空，没有可提交的内容（勾选文件即暂存）');
-      }
       this.tracker.update(repoId, 'committing');
+      const tCommit = Date.now();
       await repo.commit(req.message, {
         all: false,
-        amend: req.amend,
-        signoff: req.signoff,
-        noVerify: req.noVerify,
+        amend: req.options.amend,
+        signoff: req.options.signoff,
+        noVerify: req.options.noVerify,
+        author: req.options.author,
       });
+      this.metric?.('commit.git', Date.now() - tCommit);
       let oid = repo.state.HEAD?.commit;
       try {
         oid = (await repo.getCommit('HEAD')).hash;
@@ -111,15 +135,22 @@ export class BatchOrchestrator {
       }
       const branch = repo.state.HEAD?.name;
       this.tracker.end(repoId, 'done');
+      this.options().onCommitted?.(repoId, req);
       return { repoId, ok: true, commitOid: oid, branch, durationMs: Date.now() - started };
     } catch (err) {
       const error = toProtocolError(err, 'commit');
       this.tracker.end(repoId, 'failed', error.message);
-      return { repoId, ok: false, error, durationMs: Date.now() - started };
+      return {
+        repoId,
+        ok: false,
+        error,
+        durationMs: Date.now() - started,
+        ...(tx.indexModified ? { indexModified: true } : {}),
+      };
     }
   }
 
-  private async pushOne(result: CommitResult, req: CommitRequest): Promise<void> {
+  private async pushOne(result: CommitResult, req: CommitRequestV2): Promise<void> {
     const repo = this.registry.get(result.repoId);
     if (!repo) {
       return;

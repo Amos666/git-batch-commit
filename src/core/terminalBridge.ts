@@ -11,10 +11,10 @@ export class TerminalBridge {
   async retryInTerminal(repoId: string, command: string): Promise<void> {
     const desc = this.registry.descriptor(repoId);
     if (!desc) {
-      throw makeError('NO_REPOSITORY', `仓库不存在: ${repoId}`);
+      throw makeError('NO_REPOSITORY', `Repository not found: ${repoId}`);
     }
     if (!ALLOWED_COMMANDS.test(command)) {
-      throw makeError('GENERIC', '不允许在终端执行该命令');
+      throw makeError('GENERIC', 'This command is not allowed in the terminal');
     }
     const terminal = vscode.window.createTerminal({ name: 'Git Batch Commit', cwd: desc.rootPath });
     terminal.show();

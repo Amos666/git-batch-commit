@@ -1,7 +1,26 @@
 import type { ProtocolError } from './errors';
-import type { CommitRequest, CommitResult, OperationState, PanelState, RepoStatus } from './models';
+import type {
+  ChangelistDescriptor,
+  ChangelistFileRef,
+  ChangelistState,
+  CheckAvailability,
+  CheckId,
+  CheckReport,
+  CommitMode,
+  CommitOptionsState,
+  CommitRequest,
+  CommitRequestV2,
+  CommitResult,
+  KernelCapabilities,
+  ModeMigrationPreview,
+  OperationState,
+  PanelState,
+  PartialSelection,
+  RepoStatus,
+  UnavailableReason,
+} from './models';
 
-export const PROTOCOL_VERSION = 1;
+export const PROTOCOL_VERSION = 2;
 
 export interface PanelSettings {
   defaultSelectAll: boolean;
@@ -13,16 +32,20 @@ export interface PanelSettings {
 
 export interface InitResult {
   panelState: PanelState;
+  unavailableReason?: UnavailableReason;
   repos: RepoStatus[];
   settings: PanelSettings;
   extensionVersion: string;
+  capabilities: KernelCapabilities;
+  checks: CheckAvailability[];
+  changelists: ChangelistState;
 }
 
 export interface BranchRef {
   name: string;
   remote?: string;
   commit?: string;
-  current: boolean;
+  current?: boolean;
 }
 
 export type DiffSide = 'head' | 'staged' | 'worktree';
@@ -40,6 +63,15 @@ export interface HunkInfo {
 export interface HunkListResult {
   side: 'worktree' | 'staged';
   binary: boolean;
+  hunks: HunkInfo[];
+}
+
+export interface DiffDataResult {
+  side: DiffSide;
+  binary: boolean;
+  tooLarge: boolean;
+  oldText: string;
+  newText: string;
   hunks: HunkInfo[];
 }
 
@@ -77,12 +109,14 @@ export interface LogPage {
 export interface RequestMap {
   'panel.init': { params: undefined; result: InitResult };
   'status.get': { params: { repoId?: string }; result: RepoStatus[] };
+  'status.refresh': { params: { repoId?: string }; result: RepoStatus[] };
   'index.stage': { params: { repoId: string; paths: string[] }; result: void };
   'index.unstage': { params: { repoId: string; paths: string[] }; result: void };
   'index.stageAll': { params: { repoId: string }; result: void };
   'index.unstageAll': { params: { repoId: string }; result: void };
-  'commit.run': { params: CommitRequest; result: CommitResult[] };
+  'commit.run': { params: CommitRequest | CommitRequestV2; result: CommitResult[] };
   'commit.show': { params: { repoId: string; oid: string }; result: void };
+  'commit.isPushed': { params: { repoId: string }; result: { pushed: boolean } };
   'commit.undo': { params: { repoId: string }; result: void };
   'commit.template': { params: undefined; result: string | null };
   'history.list': { params: undefined; result: string[] };
@@ -118,6 +152,29 @@ export interface RequestMap {
   'ui.openGitSettings': { params: undefined; result: void };
   'ui.focus': { params: { focused: boolean }; result: void };
   'ui.metric': { params: { name: string; ms: number }; result: void };
+  'ui.reloadWindow': { params: undefined; result: void };
+  'changelist.list': { params: undefined; result: ChangelistState };
+  'changelist.create': { params: { name: string; comment?: string }; result: ChangelistDescriptor };
+  'changelist.rename': { params: { id: string; name: string }; result: void };
+  'changelist.remove': { params: { id: string }; result: void };
+  'changelist.setActive': { params: { id: string }; result: void };
+  'changelist.setComment': { params: { id: string; comment: string }; result: void };
+  'changelist.move': { params: { refs: ChangelistFileRef[]; targetId: string; force?: boolean }; result: void };
+  'mode.get': { params: undefined; result: { mode: CommitMode } };
+  'mode.previewMigration': { params: { mode: CommitMode }; result: ModeMigrationPreview };
+  'mode.set': { params: { mode: CommitMode; confirm: boolean }; result: void };
+  'inclusion.set': { params: { refs: ChangelistFileRef[]; included: boolean }; result: void };
+  'inclusion.setPartial': { params: { repoId: string; path: string; selection: PartialSelection | null }; result: void };
+  'index.stagePartial': { params: { repoId: string; path: string; selection: PartialSelection }; result: void };
+  'index.unstagePartial': { params: { repoId: string; path: string; selection: PartialSelection }; result: void };
+  'diff.data': { params: { repoId: string; path: string; side: DiffSide; force?: boolean }; result: DiffDataResult };
+  'options.get': { params: undefined; result: CommitOptionsState };
+  'options.set': { params: Partial<CommitOptionsState>; result: void };
+  'checks.run': { params: { repoIds: string[]; checkIds: CheckId[]; refs?: ChangelistFileRef[] }; result: CheckReport };
+  'files.rollback': { params: { repoId: string; paths: string[] }; result: void };
+  'files.delete': { params: { repoId: string; paths: string[] }; result: void };
+  'files.open': { params: { repoId: string; path: string }; result: void };
+  'files.reveal': { params: { repoId: string; path: string }; result: void };
 }
 
 export type Method = keyof RequestMap;
@@ -138,8 +195,24 @@ export interface EventMap {
   'repo.opened': { status: RepoStatus };
   'repo.closed': { repoId: string };
   'operation.progress': { operation: OperationState };
-  'panel.state': { panelState: PanelState };
-  'ui.command': { command: 'commit' };
+  'panel.state': { panelState: PanelState; unavailableReason?: UnavailableReason };
+  'changelists.changed': { state: ChangelistState };
+  'mode.changed': { mode: CommitMode };
+  'options.changed': { options: CommitOptionsState };
+  'checks.progress': { checkId: CheckId; status: 'running' | 'done' };
+  'ui.command': {
+    command:
+      | 'commit'
+      | 'commitAndPush'
+      | 'push'
+      | 'diff'
+      | 'addToVcs'
+      | 'moveChangelist'
+      | 'toggleOptions'
+      | 'setActiveChangelist'
+      | 'refresh'
+      | 'rollback';
+  };
 }
 
 export type EventName = keyof EventMap;
@@ -178,4 +251,22 @@ export function isHostEvent(msg: unknown): msg is HostEvent {
     (msg as { v?: unknown }).v === PROTOCOL_VERSION &&
     typeof (msg as { event?: unknown }).event === 'string'
   );
+}
+
+/** Legacy webviews send the v1 flat commit shape; normalize to the v2 request. */
+export function normalizeCommitRequest(params: CommitRequest | CommitRequestV2): CommitRequestV2 {
+  if ('options' in params) {
+    return params;
+  }
+  return {
+    repoIds: params.repoIds,
+    message: params.message,
+    options: {
+      amend: params.amend,
+      signoff: params.signoff,
+      noVerify: params.noVerify,
+      pushAfter: params.pushAfter,
+    },
+    expectedStaged: params.expectedStaged,
+  };
 }

@@ -2,7 +2,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { RepoRegistry } from '../adapter/repoRegistry';
-import { Status } from '../adapter/gitApiTypes';
+import { KernelStatus } from '../kernel/types';
 import type { MiniRunner } from '../core/miniRunner';
 import { validatePath } from '../core/miniRunner';
 import { makeError } from '../protocol/errors';
@@ -37,31 +37,29 @@ export class ShelfService {
     const desc = this.descOrThrow(repoId);
     const trimmed = name.trim();
     if (trimmed.length === 0 || trimmed.length > NAME_CAP) {
-      throw makeError('GENERIC', `Shelf 名称需为 1–${NAME_CAP} 字符`);
+      throw makeError('GENERIC', `Shelf name must be 1–${NAME_CAP} characters`);
     }
     if (paths.length === 0 || paths.length > PATHS_CAP || !paths.every(validatePath)) {
-      throw makeError('GENERIC', 'Shelf 文件列表非法');
+      throw makeError('GENERIC', 'Invalid shelf file list');
     }
-    const conflicted = new Set(
-      repo.state.mergeChanges.map((c) => path.relative(desc.rootPath, c.uri.fsPath).split(path.sep).join('/')),
-    );
+    const conflicted = new Set(repo.state.mergeChanges.map((c) => c.path));
     const tracked = new Set(
       [...repo.state.workingTreeChanges, ...repo.state.indexChanges]
-        .filter((c) => c.status !== Status.UNTRACKED && c.status !== Status.IGNORED && c.status < Status.ADDED_BY_US)
-        .map((c) => path.relative(desc.rootPath, c.uri.fsPath).split(path.sep).join('/')),
+        .filter((c) => c.status !== KernelStatus.UNTRACKED && c.status !== KernelStatus.IGNORED && c.status < KernelStatus.ADDED_BY_US)
+        .map((c) => c.path),
     );
     for (const p of paths) {
       if (conflicted.has(p)) {
-        throw makeError('CONFLICT', '冲突文件请先解决冲突', ['openMergeEditor']);
+        throw makeError('CONFLICT', 'Resolve conflicts in this file first', ['openMergeEditor']);
       }
       if (!tracked.has(p)) {
-        throw makeError('GENERIC', `只能搁置已跟踪文件的改动: ${p}`);
+        throw makeError('GENERIC', `Only changes to tracked files can be shelved: ${p}`);
       }
     }
     const res = await this.mini.run(desc.rootPath, { cmd: 'diff-head', paths });
     const patch = res.stdout.toString('utf8');
     if (patch.trim().length === 0) {
-      throw makeError('NO_CHANGES', '所选文件没有相对 HEAD 的改动');
+      throw makeError('NO_CHANGES', 'The selected files have no changes relative to HEAD');
     }
     fs.mkdirSync(this.shelfRoot, { recursive: true });
     const id = randomUUID();
@@ -72,7 +70,7 @@ export class ShelfService {
       await this.mini.run(desc.rootPath, { cmd: 'apply-check', patchPath, reverse: true });
     } catch {
       fs.rmSync(patchPath, { force: true });
-      throw makeError('GENERIC', '补丁与当前工作区状态不匹配，未搁置');
+      throw makeError('GENERIC', 'Patch does not match the current worktree state; nothing was shelved');
     }
     try {
       await this.mini.run(desc.rootPath, { cmd: 'restore-head', paths });
@@ -98,18 +96,18 @@ export class ShelfService {
     const index = this.readIndex();
     const entry = index.find((e) => e.id === id && e.repoRoot === desc.rootPath);
     if (!entry) {
-      throw makeError('SHELF_NOT_FOUND', `Shelf 不存在: ${id}`);
+      throw makeError('SHELF_NOT_FOUND', `Shelf not found: ${id}`);
     }
     const patch = fs.readFileSync(this.patchPath(id), 'utf8');
     let target = this.patchPath(id);
     let partPath: string | undefined;
     if (paths && paths.length > 0) {
       if (!paths.every((p) => entry.files.includes(p))) {
-        throw makeError('GENERIC', '恢复路径不在该 Shelf 中');
+        throw makeError('GENERIC', 'Restore path is not part of this shelf');
       }
       const filtered = filterPatch(patch, paths);
       if (filtered.trim().length === 0) {
-        throw makeError('GENERIC', '所选路径在补丁中不存在');
+        throw makeError('GENERIC', 'The selected paths do not exist in the patch');
       }
       partPath = this.patchPath(`${id}.part`);
       fs.writeFileSync(partPath, filtered);
@@ -119,7 +117,7 @@ export class ShelfService {
       try {
         await this.mini.run(desc.rootPath, { cmd: 'apply-check', patchPath: target });
       } catch (err) {
-        throw makeError('SHELF_APPLY_FAILED', `补丁无法干净应用（当前分支内容已变化）: ${(err as ProtocolError).message}`);
+        throw makeError('SHELF_APPLY_FAILED', `Patch cannot be applied cleanly (branch content has changed): ${(err as ProtocolError).message}`);
       }
       await this.mini.run(desc.rootPath, { cmd: 'apply', patchPath: target });
     } finally {
@@ -136,7 +134,7 @@ export class ShelfService {
     const desc = this.descOrThrow(repoId);
     const index = this.readIndex();
     if (!index.some((e) => e.id === id && e.repoRoot === desc.rootPath)) {
-      throw makeError('SHELF_NOT_FOUND', `Shelf 不存在: ${id}`);
+      throw makeError('SHELF_NOT_FOUND', `Shelf not found: ${id}`);
     }
     this.removeEntry(index, id);
   }
@@ -173,7 +171,7 @@ export class ShelfService {
   private repoOrThrow(repoId: string) {
     const repo = this.registry.get(repoId);
     if (!repo) {
-      throw makeError('NO_REPOSITORY', `仓库不存在: ${repoId}`);
+      throw makeError('NO_REPOSITORY', `Repository not found: ${repoId}`);
     }
     return repo;
   }
@@ -181,7 +179,7 @@ export class ShelfService {
   private descOrThrow(repoId: string) {
     const desc = this.registry.descriptor(repoId);
     if (!desc) {
-      throw makeError('NO_REPOSITORY', `仓库不存在: ${repoId}`);
+      throw makeError('NO_REPOSITORY', `Repository not found: ${repoId}`);
     }
     return desc;
   }

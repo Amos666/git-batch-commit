@@ -1,33 +1,32 @@
-import * as path from 'node:path';
-import { Status } from './gitApiTypes';
-import type { Branch, Change } from './gitApiTypes';
+import { KernelStatus } from '../kernel/types';
+import type { KernelBranch, KernelChange } from '../kernel/types';
 import type { BranchInfo, ChangeKind, FileChange, RepoDescriptor, RepoStatus, StatusLetter } from '../protocol/models';
 
 export interface StateMapperInput {
   descriptor: RepoDescriptor;
-  head: Branch | undefined;
-  mergeChanges: Change[];
-  indexChanges: Change[];
-  workingTreeChanges: Change[];
-  untrackedChanges: Change[];
+  head: KernelBranch | undefined;
+  mergeChanges: KernelChange[];
+  indexChanges: KernelChange[];
+  workingTreeChanges: KernelChange[];
+  untrackedChanges: KernelChange[];
 }
 
-const INDEX_LETTERS = new Map<Status, StatusLetter>([
-  [Status.INDEX_MODIFIED, 'M'],
-  [Status.INDEX_ADDED, 'A'],
-  [Status.INDEX_DELETED, 'D'],
-  [Status.INDEX_RENAMED, 'R'],
-  [Status.INDEX_COPIED, 'C'],
+const INDEX_LETTERS = new Map<KernelStatus, StatusLetter>([
+  [KernelStatus.INDEX_MODIFIED, 'M'],
+  [KernelStatus.INDEX_ADDED, 'A'],
+  [KernelStatus.INDEX_DELETED, 'D'],
+  [KernelStatus.INDEX_RENAMED, 'R'],
+  [KernelStatus.INDEX_COPIED, 'C'],
 ]);
 
-const WORKTREE_LETTERS = new Map<Status, StatusLetter>([
-  [Status.MODIFIED, 'M'],
-  [Status.DELETED, 'D'],
-  [Status.UNTRACKED, '?'],
-  [Status.IGNORED, '!'],
-  [Status.INTENT_TO_ADD, 'A'],
-  [Status.INTENT_TO_RENAME, 'R'],
-  [Status.TYPE_CHANGED, 'T'],
+const WORKTREE_LETTERS = new Map<KernelStatus, StatusLetter>([
+  [KernelStatus.MODIFIED, 'M'],
+  [KernelStatus.DELETED, 'D'],
+  [KernelStatus.UNTRACKED, '?'],
+  [KernelStatus.IGNORED, '!'],
+  [KernelStatus.INTENT_TO_ADD, 'A'],
+  [KernelStatus.INTENT_TO_RENAME, 'R'],
+  [KernelStatus.TYPE_CHANGED, 'T'],
 ]);
 
 function kindFromLetter(letter: StatusLetter): ChangeKind {
@@ -42,12 +41,7 @@ function kindFromLetter(letter: StatusLetter): ChangeKind {
   }
 }
 
-function relativePath(rootPath: string, fsPath: string): string {
-  const rel = path.relative(rootPath, fsPath);
-  return rel.split(path.sep).join('/');
-}
-
-export function mapBranch(head: Branch | undefined): BranchInfo {
+export function mapBranch(head: KernelBranch | undefined): BranchInfo {
   if (!head) {
     return { detached: false };
   }
@@ -63,31 +57,29 @@ export function mapBranch(head: Branch | undefined): BranchInfo {
 
 export function mapRepoStatus(input: StateMapperInput, seq: number): RepoStatus {
   const { descriptor } = input;
-  const rootPath = descriptor.rootPath;
   const byPath = new Map<string, FileChange>();
 
-  const ensure = (fsPath: string): FileChange => {
-    const p = relativePath(rootPath, fsPath);
-    let entry = byPath.get(p);
+  const ensure = (change: KernelChange): FileChange => {
+    let entry = byPath.get(change.path);
     if (!entry) {
       entry = {
         repoId: descriptor.id,
-        path: p,
-        uri: '',
+        path: change.path,
+        uri: change.uri,
         indexStatus: null,
         worktreeStatus: null,
         kind: 'modified',
         staged: false,
         conflicted: false,
       };
-      byPath.set(p, entry);
+      byPath.set(change.path, entry);
     }
     return entry;
   };
 
   for (const change of input.mergeChanges) {
-    const entry = ensure(change.uri.fsPath);
-    entry.uri = change.uri.toString();
+    const entry = ensure(change);
+    entry.uri = change.uri;
     entry.conflicted = true;
     entry.kind = 'conflicted';
     entry.indexStatus = 'U';
@@ -99,15 +91,15 @@ export function mapRepoStatus(input: StateMapperInput, seq: number): RepoStatus 
     if (!letter) {
       continue;
     }
-    const entry = ensure(change.uri.fsPath);
-    entry.uri = change.uri.toString();
+    const entry = ensure(change);
+    entry.uri = change.uri;
     if (!entry.conflicted) {
       entry.indexStatus = letter;
       entry.staged = true;
       entry.kind = kindFromLetter(letter);
     }
-    if ((letter === 'R' || letter === 'C') && change.originalUri) {
-      entry.origPath = relativePath(rootPath, change.originalUri.fsPath);
+    if ((letter === 'R' || letter === 'C') && change.origPath) {
+      entry.origPath = change.origPath;
     }
   }
 
@@ -116,22 +108,22 @@ export function mapRepoStatus(input: StateMapperInput, seq: number): RepoStatus 
     if (!letter || letter === '!') {
       continue;
     }
-    const entry = ensure(change.uri.fsPath);
-    entry.uri = change.uri.toString();
+    const entry = ensure(change);
+    entry.uri = change.uri;
     if (!entry.conflicted) {
       entry.worktreeStatus = letter;
       if (!entry.staged) {
         entry.kind = kindFromLetter(letter);
       }
     }
-    if ((letter === 'R') && change.originalUri) {
-      entry.origPath = relativePath(rootPath, change.originalUri.fsPath);
+    if (letter === 'R' && change.origPath) {
+      entry.origPath = change.origPath;
     }
   }
 
   for (const change of input.untrackedChanges) {
-    const entry = ensure(change.uri.fsPath);
-    entry.uri = change.uri.toString();
+    const entry = ensure(change);
+    entry.uri = change.uri;
     entry.worktreeStatus = '?';
     if (!entry.conflicted && !entry.staged) {
       entry.kind = 'untracked';

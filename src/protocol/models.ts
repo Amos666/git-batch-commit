@@ -65,6 +65,8 @@ export interface CommitResult {
   skipped?: 'cancelled' | 'stopped-after-error';
   error?: import('./errors').ProtocolError;
   durationMs: number;
+  /** changelist translation touched the index before a failure: UI shows "review Staged" banner */
+  indexModified?: boolean;
 }
 
 export type OperationPhase = 'idle' | 'validating' | 'committing' | 'pushing' | 'done' | 'failed' | 'cancelled';
@@ -78,4 +80,118 @@ export interface OperationState {
   message?: string;
 }
 
-export type PanelState = 'ready' | 'git-extension-unavailable' | 'initializing';
+export type PanelState = 'ready' | 'initializing' | 'backend-unavailable';
+
+export type UnavailableReason = 'extension-disabled' | 'git-not-found' | 'init-timeout';
+
+/** Feature flags of the active git kernel; UI renders availability from these, never from kernel identity. */
+export interface KernelCapabilities {
+  stagedDiff: boolean;
+  hashObject: boolean;
+  stash: boolean;
+  log: boolean;
+  rootCommitStats: boolean;
+  commitAuthor: boolean;
+  commitCleanup: boolean;
+}
+
+export type CheckId =
+  | 'reformat'
+  | 'optimizeImports'
+  | 'rearrange'
+  | 'cleanup'
+  | 'copyright'
+  | 'dependencies'
+  | 'analyze'
+  | 'todo'
+  | 'runConfiguration'
+  | 'afterCommitUpload';
+
+export type CheckStatus = 'ok' | 'issues' | 'unavailable' | 'skipped';
+
+export interface CheckResult {
+  id: CheckId;
+  status: CheckStatus;
+  details?: string;
+}
+
+export interface CheckReport {
+  results: CheckResult[];
+}
+
+export interface CheckAvailability {
+  id: CheckId;
+  available: boolean;
+  limited?: boolean;
+}
+
+/** Hunk ids plus optional per-hunk included line offsets (0-based within hunk new-side lines). */
+export interface PartialSelection {
+  hunkIds: number[];
+  lines?: Record<number, number[]>;
+}
+
+export interface ChangelistFileRef {
+  repoId: string;
+  path: string;
+}
+
+export interface ChangelistDescriptor {
+  id: string;
+  name: string;
+  comment: string;
+  isDefault: boolean;
+  files: ChangelistFileRef[];
+  checked: ChangelistFileRef[];
+  /** keyed `${repoId}:${path}` */
+  partial: Record<string, PartialSelection>;
+}
+
+export type CommitMode = 'changelist' | 'staging';
+
+export interface ChangelistState {
+  version: 1;
+  mode: CommitMode;
+  activeId: string;
+  lists: ChangelistDescriptor[];
+  unversionedChecked: ChangelistFileRef[];
+}
+
+export interface ModeMigrationPreview {
+  mode: CommitMode;
+  listsToRemove: number;
+  checkedToStage: number;
+  partialsToStage: number;
+  indexEntriesToChecked: number;
+}
+
+export interface CommitAuthor {
+  name: string;
+  email: string;
+}
+
+export interface CommitOptionsV2 {
+  amend?: boolean;
+  signoff?: boolean;
+  noVerify?: boolean;
+  author?: CommitAuthor;
+  pushAfter?: boolean;
+}
+
+export interface CommitRequestV2 {
+  repoIds: string[];
+  message: string;
+  options: CommitOptionsV2;
+  /** changelist mode: included set snapshot for race validation */
+  expectedIncluded?: Record<string, { path: string; selection?: PartialSelection }[]>;
+  /** staging mode legacy: expected index set */
+  expectedStaged?: Record<string, string[]>;
+}
+
+export interface CommitOptionsState {
+  author?: CommitAuthor;
+  signoff: boolean;
+  runHooks: boolean;
+  checks: Partial<Record<CheckId, boolean>>;
+  runAfterCommit: boolean;
+}

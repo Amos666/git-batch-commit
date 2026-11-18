@@ -1,15 +1,15 @@
-import * as vscode from 'vscode';
-import type { Repository } from '../adapter/gitApiTypes';
+import { Emitter } from '../core/events';
+import type { KernelRepo } from '../kernel/types';
 import { RepoRegistry, repoIdFor } from '../adapter/repoRegistry';
 import { mapRepoStatus } from '../adapter/stateMapper';
 import type { RepoStatus } from '../protocol/models';
 
-export class StatusService implements vscode.Disposable {
+export class StatusService {
   private seq = 0;
   private readonly timers = new Map<string, ReturnType<typeof setTimeout>>();
-  private readonly subs = new Map<string, vscode.Disposable>();
-  private readonly changed = new vscode.EventEmitter<RepoStatus>();
-  private readonly disposables: vscode.Disposable[] = [];
+  private readonly subs = new Map<string, () => void>();
+  private readonly changed = new Emitter<RepoStatus>();
+  private readonly unsubs: (() => void)[] = [];
 
   readonly onStatusChanged = this.changed.event;
 
@@ -20,7 +20,7 @@ export class StatusService implements vscode.Disposable {
         this.attach(repo);
       }
     }
-    this.disposables.push(
+    this.unsubs.push(
       registry.onDidOpen((desc) => {
         const repo = registry.get(desc.id);
         if (repo) {
@@ -36,8 +36,8 @@ export class StatusService implements vscode.Disposable {
     this.debounceMs = ms;
   }
 
-  private attach(repo: Repository): void {
-    const id = repoIdFor(repo.rootUri);
+  private attach(repo: KernelRepo): void {
+    const id = repoIdFor(repo.rootPath);
     if (this.subs.has(id)) {
       return;
     }
@@ -45,7 +45,7 @@ export class StatusService implements vscode.Disposable {
   }
 
   private detach(repoId: string): void {
-    this.subs.get(repoId)?.dispose();
+    this.subs.get(repoId)?.();
     this.subs.delete(repoId);
     const timer = this.timers.get(repoId);
     if (timer) {
@@ -54,8 +54,8 @@ export class StatusService implements vscode.Disposable {
     }
   }
 
-  private schedulePush(repo: Repository): void {
-    const id = repoIdFor(repo.rootUri);
+  private schedulePush(repo: KernelRepo): void {
+    const id = repoIdFor(repo.rootPath);
     const existing = this.timers.get(id);
     if (existing) {
       clearTimeout(existing);
@@ -66,15 +66,15 @@ export class StatusService implements vscode.Disposable {
     }, this.debounceMs));
   }
 
-  private push(repo: Repository): void {
+  private push(repo: KernelRepo): void {
     const snapshot = this.snapshotOf(repo);
     if (snapshot) {
       this.changed.fire(snapshot);
     }
   }
 
-  private snapshotOf(repo: Repository): RepoStatus | undefined {
-    const descriptor = this.registry.descriptor(repoIdFor(repo.rootUri));
+  private snapshotOf(repo: KernelRepo): RepoStatus | undefined {
+    const descriptor = this.registry.descriptor(repoIdFor(repo.rootPath));
     if (!descriptor) {
       return undefined;
     }
@@ -118,13 +118,29 @@ export class StatusService implements vscode.Disposable {
     }
   }
 
+  /** IDEA-style Refresh: force a kernel rescan, push events, return fresh snapshots. */
+  async rescan(repoId?: string): Promise<RepoStatus[]> {
+    const descs = repoId ? this.registry.all().filter((d) => d.id === repoId) : this.registry.all();
+    await Promise.all(
+      descs.map(async (d) => {
+        const repo = this.registry.get(d.id);
+        if (!repo) {
+          return;
+        }
+        await repo.refresh?.();
+        this.push(repo);
+      }),
+    );
+    return repoId ? [this.snapshot(repoId)].filter((s): s is RepoStatus => s !== undefined) : this.all();
+  }
+
   dispose(): void {
     for (const id of [...this.subs.keys()]) {
       this.detach(id);
     }
     this.changed.dispose();
-    for (const d of this.disposables) {
-      d.dispose();
+    for (const unsub of this.unsubs) {
+      unsub();
     }
   }
 }

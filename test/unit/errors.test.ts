@@ -46,19 +46,19 @@ describe('mapGitErrorCode', () => {
 
 describe('protocol guards', () => {
   it('identifies requests', () => {
-    expect(isRequest({ v: 1, id: 'a', method: 'panel.init', params: undefined })).toBe(true);
-    expect(isRequest({ v: 2, id: 'a', method: 'x' })).toBe(false);
+    expect(isRequest({ v: 2, id: 'a', method: 'panel.init', params: undefined })).toBe(true);
+    expect(isRequest({ v: 1, id: 'a', method: 'panel.init' })).toBe(false);
     expect(isRequest(null)).toBe(false);
   });
 
   it('identifies responses', () => {
-    expect(isResponse({ v: 1, id: 'a', ok: true, result: null })).toBe(true);
-    expect(isResponse({ v: 1, id: 'a', ok: false, error: makeError('GENERIC', 'x') })).toBe(true);
-    expect(isResponse({ v: 1, event: 'x' })).toBe(false);
+    expect(isResponse({ v: 2, id: 'a', ok: true, result: null })).toBe(true);
+    expect(isResponse({ v: 2, id: 'a', ok: false, error: makeError('GENERIC', 'x') })).toBe(true);
+    expect(isResponse({ v: 2, event: 'x' })).toBe(false);
   });
 
   it('identifies events', () => {
-    expect(isHostEvent({ v: 1, event: 'status.changed', seq: 1, payload: {} })).toBe(true);
-    expect(isHostEvent({ v: 1, id: 'a', ok: true })).toBe(false);
+    expect(isHostEvent({ v: 2, event: 'status.changed', seq: 1, payload: {} })).toBe(true);
+    expect(isHostEvent({ v: 2, id: 'a', ok: true })).toBe(false);
   });
 });

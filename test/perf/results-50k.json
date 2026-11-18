@@ -1,18 +1,24 @@
 {
   "label": "50k",
   "budgets": {},
-  "coldFirstScreenMs": 11816,
-  "heapAfterRenderMB": 36,
-  "builtInRefreshMs": 6825,
-  "singleFileRefreshMs": 6996,
-  "ourPipelineAfterBuiltInMs": 171,
-  "extHostLagDuringRefreshMs": 4,
-  "heapAfterScrollMB": 53,
+  "metrics": {
+    "panel.init": [
+      7798,
+      8255
+    ]
+  },
+  "coldFirstScreenMs": 14968,
+  "heapAfterRenderMB": 57,
+  "builtInRefreshMs": 6733,
+  "singleFileRefreshMs": 6905,
+  "ourPipelineAfterBuiltInMs": 172,
+  "extHostLagDuringRefreshMs": 1,
+  "heapAfterScrollMB": 57,
   "longTasksMs": [
-    104,
-    149,
-    97,
-    112
+    120,
+    360,
+    108,
+    293
   ],
-  "heapFinalMB": 53
+  "heapFinalMB": 57
 }

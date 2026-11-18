@@ -1,191 +1,245 @@
-// Visual walkthrough (task #24): five overlays + keyboard nav, dark then light theme
+// Phase 2 visual walkthrough: IDEA Commit tool window flows, dark then light theme.
+// Run via: xvfb-run -a node test/manual-run/launch.mjs walkthrough.mjs
+import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
+import * as path from 'node:path';
+import { STRINGS } from '../../src/webview/strings/en.ts';
+import {
+  check, clickTestId, contextMenuLabels, escape, finish, openView, panel, selectOption, setInput, shot, sleep, textOf, workbench,
+} from './lib/cdp.mjs';
 
-const PORT = 9223;
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const failures = [];
-const check = (name, cond) => {
-  console.log(`${cond ? 'OK  ' : 'FAIL'} ${name}`);
-  if (!cond) failures.push(name);
-};
+const wb = await workbench();
+await openView(wb, 'Commit');
+const { cdp, ev } = await panel('commit-panel');
 
-async function targets() {
-  return (await (await fetch(`http://127.0.0.1:${PORT}/json/list`)).json());
-}
-function connect(url) {
-  return new Promise((resolve, reject) => {
-    const ws = new WebSocket(url);
-    ws.addEventListener('open', () => resolve(ws));
-    ws.addEventListener('error', reject);
-  });
-}
-class Cdp {
-  constructor(ws) { this.ws = ws; this.id = 0; }
-  send(method, params = {}) {
-    const id = ++this.id;
-    return new Promise((resolve, reject) => {
-      const onMsg = (ev) => {
-        const msg = JSON.parse(ev.data);
-        if (msg.id === id) {
-          this.ws.removeEventListener('message', onMsg);
-          if (msg.error) reject(new Error(`${method}: ${JSON.stringify(msg.error.message)}`));
-          else resolve(msg.result);
-        }
-      };
-      this.ws.addEventListener('message', onMsg);
-      this.ws.send(JSON.stringify({ id, method, params }));
-    });
+async function waitFor(fn, ms = 12000) {
+  const end = Date.now() + ms;
+  while (Date.now() < end) {
+    if (await fn()) return true;
+    await sleep(300);
   }
-  async eval(expression) {
-    const res = await this.send('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true });
-    if (res.exceptionDetails) throw new Error('eval: ' + JSON.stringify(res.exceptionDetails).slice(0, 250));
-    return res.result.value;
-  }
-  async key(key, code, keyCode, modifiers = 0) {
-    for (const type of ['rawKeyDown', 'keyUp']) {
-      await this.send('Input.dispatchKeyEvent', { type, key, code, windowsVirtualKeyCode: keyCode, nativeVirtualKeyCode: keyCode, modifiers });
-    }
-  }
-  async chord(keys) {
-    // keys: [{key, code, vk, ctrl}]
-    let modifiers = 0;
-    for (const k of keys) {
-      if (k.ctrl) modifiers |= 2;
-      await this.send('Input.dispatchKeyEvent', { type: 'rawKeyDown', key: k.key, code: k.code, windowsVirtualKeyCode: k.vk, nativeVirtualKeyCode: k.vk, modifiers });
-    }
-    for (const k of [...keys].reverse()) {
-      if (k.ctrl) modifiers &= ~2;
-      await this.send('Input.dispatchKeyEvent', { type: 'keyUp', key: k.key, code: k.code, windowsVirtualKeyCode: k.vk, nativeVirtualKeyCode: k.vk, modifiers });
-    }
-  }
+  return false;
 }
-async function shot(cdp, name) {
-  const { data } = await cdp.send('Page.captureScreenshot', { format: 'png' });
-  fs.writeFileSync(`test/manual-run/${name}.png`, Buffer.from(data, 'base64'));
-  console.log('shot ->', name + '.png');
-}
-
-const list0 = await targets();
-const workbench = list0.find((t) => t.type === 'page' && t.url.startsWith('vscode-file://'));
-const wb = new Cdp(await connect(workbench.webSocketDebuggerUrl));
-
-const already = await wb.eval(`!!Array.from(document.querySelectorAll('.title')).find(t => (t.textContent || '').includes('Git Batch Commit: Commit'))`);
-if (!already) {
-  await wb.eval(`(() => {
-    const btn = Array.from(document.querySelectorAll('.activitybar .action-item a'))
-      .find(a => (a.getAttribute('aria-label') || '').includes('Git Batch Commit'));
-    if (btn) btn.click();
-  })()`);
-  await sleep(5000);
-}
-const wt = (await targets()).find((t) => t.type === 'iframe' && t.url.startsWith('vscode-webview://'));
-if (!wt) throw new Error('no vscode-webview target');
-const wv = new Cdp(await connect(wt.webSocketDebuggerUrl));
-const inDoc = (body) => `(() => { const doc = document.querySelector('iframe').contentDocument; if (!doc || !doc.body) return 'NO INNER DOC'; return ((${body})(doc)); })()`;
-const ev = (body) => wv.eval(inDoc(body));
-const setInput = (sel, value) => ev(`(doc) => {
-  const input = doc.querySelector('${sel}');
-  if (!input) return false;
-  const set = Object.getOwnPropertyDescriptor(doc.defaultView.HTMLInputElement.prototype, 'value').set;
-  set.call(input, ${JSON.stringify(value)});
-  input.dispatchEvent(new doc.defaultView.Event('input', { bubbles: true }));
+const has = (testId) => ev(`(doc) => !!doc.querySelector('[data-testid="${testId}"]')`);
+const rightClick = (sel) => ev(`(doc) => {
+  const el = doc.querySelector('${sel}');
+  if (!el) return false;
+  const r = el.getBoundingClientRect();
+  el.dispatchEvent(new doc.defaultView.MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: r.x + 30, clientY: r.y + 5 }));
   return true;
 }`);
-const clickBtn = (scope, label) => ev(`(doc) => {
-  const root = ${scope ? `doc.querySelector('${scope}')` : 'doc'};
-  if (!root) return false;
-  const btn = Array.from(root.querySelectorAll('button')).find(b => b.textContent.trim() === '${label}');
-  if (!btn || btn.disabled) return false;
-  btn.click();
+const dblClick = (sel) => ev(`(doc) => {
+  const el = doc.querySelector('${sel}');
+  if (!el) return false;
+  el.dispatchEvent(new doc.defaultView.MouseEvent('dblclick', { bubbles: true, cancelable: true }));
   return true;
 }`);
-const repoRow = (name) => `(Array.from(doc.querySelectorAll('.gbc-reporow')).find(r => r.textContent.includes('${name}')))`;
-const esc = async () => { await wv.key('Escape', 'Escape', 27); await sleep(600); };
+const menuLabels = () => ev(`(doc) => Array.from(doc.querySelectorAll('[data-testid="context-menu"] [role="menuitem"]')).map(b => b.getAttribute('data-menu-label'))`);
+const firstFileRow = `(Array.from(doc.querySelectorAll('[data-testid="file-row"]')).find(r => r.getAttribute('data-conflicted') === 'false' && r.getAttribute('data-status') !== '?'))`;
 
 // ---- dark theme pass ----
-const theme = await wb.eval(`document.body.className`);
-console.log('body classes:', theme);
+// repoC ships conflict-free; create a merge conflict host-side to exercise the
+// Merge Conflicts group + banner, then abort so the rest of the walk is neutral.
+const repoC = path.resolve('test/integration/.tmp/repoC');
+const gitC = (...args) => execFileSync('git', args, { cwd: repoC, stdio: 'pipe' });
+const baseBranch = gitC('rev-parse', '--abbrev-ref', 'HEAD').toString().trim();
+gitC('checkout', '-q', '-b', 'walk-side');
+fs.writeFileSync(path.join(repoC, 'c.txt'), 'c1\nside\n');
+gitC('add', 'c.txt');
+gitC('commit', '-q', '-m', 'walk side');
+gitC('checkout', '-q', baseBranch);
+fs.writeFileSync(path.join(repoC, 'c.txt'), 'c1\nmain\n');
+gitC('add', 'c.txt');
+gitC('commit', '-q', '-m', 'walk main');
+try {
+  gitC('merge', 'walk-side');
+} catch {
+  // exit 1 = conflicted merge, which is what we want
+}
 await shot(wb, 'w1-panel-dark');
-check('panel renders repos', await ev(`(doc) => doc.querySelectorAll('.gbc-reporow').length >= 3`));
-
-// 1) branch overlay — must list local branches now (bug #22 regression)
-await ev(`(doc) => { ${repoRow('repoA')}?.querySelector('.gbc-branch')?.click(); }`);
-await sleep(2000);
-const branchText = await ev(`(doc) => doc.querySelector('.gbc-branchmgr')?.innerText ?? ''`);
-check('branch overlay lists main', branchText.includes('main'));
-check('branch overlay not empty', !branchText.includes('没有本地分支'));
-await shot(wb, 'w2-branch-dark');
-await esc();
-check('Escape closes branch overlay', !(await ev(`(doc) => !!doc.querySelector('.gbc-branchmgr')`)));
-
-// 2) hunk overlay on hunks.txt
-await ev(`(doc) => {
-  const row = Array.from(doc.querySelectorAll('.gbc-filerow')).find(r => r.textContent.includes('hunks.txt'));
-  const btn = row && Array.from(row.querySelectorAll('button')).find(b => b.textContent.trim() === 'Hunk');
-  if (btn) btn.click();
+check('multi-repo rows rendered', await ev(`(doc) => doc.querySelectorAll('[data-testid="repo-row"]').length >= 3`));
+// project root node: per-project tri-state select-all + collapse (IDEA parity)
+const repoARow = `(Array.from(doc.querySelectorAll('[data-testid="repo-row"]')).find(r => (r.innerText || '').includes('repoA')))`;
+const repoATrackedCount = (includedOnly) => ev(`(doc) => {
+  const id = ${repoARow}?.getAttribute('data-repo');
+  return Array.from(doc.querySelectorAll('[data-testid="file-row"]')).filter(r => r.getAttribute('data-repo') === id && r.getAttribute('data-status') !== '?'${includedOnly ? ` && r.dataset.included === 'true'` : ''}).length;
 }`);
-await sleep(2500);
-const hunkCount = await ev(`(doc) => doc.querySelectorAll('.gbc-hunk').length`);
-check('hunk overlay shows hunks', hunkCount >= 2);
-await shot(wb, 'w3-hunk-dark');
-await esc();
-check('Escape closes hunk overlay', !(await ev(`(doc) => !!doc.querySelector('.gbc-hunkoverlay')`)));
+check('project row carries checkbox and count', await ev(`(doc) => !!${repoARow}?.querySelector('[data-testid="repo-check"]') && !!${repoARow}?.querySelector('.gbc-count')`));
+await waitFor(async () => (await repoATrackedCount(false)) > 0);
+const projTotal = await repoATrackedCount(false);
+check('project has tracked files', projTotal > 0);
+await ev(`(doc) => ${repoARow}?.querySelector('[data-testid="repo-check"]')?.click()`);
+await waitFor(async () => { const n = await repoATrackedCount(true); return n === 0 || n === projTotal; });
+const afterFirst = await repoATrackedCount(true);
+check('project checkbox toggles whole project', afterFirst === 0 || afterFirst === projTotal);
+await ev(`(doc) => ${repoARow}?.querySelector('[data-testid="repo-check"]')?.click()`);
+check('project checkbox flips back', await waitFor(async () => (await repoATrackedCount(true)) === projTotal - afterFirst));
+if ((await repoATrackedCount(true)) !== projTotal) {
+  await ev(`(doc) => ${repoARow}?.querySelector('[data-testid="repo-check"]')?.click()`);
+  await waitFor(async () => (await repoATrackedCount(true)) === projTotal);
+}
+await ev(`(doc) => ${repoARow}?.querySelector('.gbc-chevron')?.click()`);
+check('project chevron collapses project files', await waitFor(async () => (await repoATrackedCount(false)) === 0));
+await ev(`(doc) => ${repoARow}?.querySelector('.gbc-chevron')?.click()`);
+check('project chevron expands project files', await waitFor(async () => (await repoATrackedCount(false)) === projTotal));
+check('default changelist header rendered', await has('changelist-default'));
+check('file rows rendered', await ev(`(doc) => doc.querySelectorAll('[data-testid="file-row"]').length >= 3`));
+check('merge conflict banner for repoC', await waitFor(() => has('banner-merge')));
+check('merge banner offers Resolve', await has('merge-resolve'));
+check('conflicted file row flagged', await ev(`(doc) => !!doc.querySelector('[data-testid="file-row"][data-conflicted="true"]')`));
+gitC('merge', '--abort');
+gitC('branch', '-D', 'walk-side');
+check('abort clears merge banner', await waitFor(async () => !(await has('banner-merge'))));
 
-// 3) stash overlay: create an entry, verify list + inline drop confirm
-await ev(`(doc) => { Array.from(${repoRow('repoA')}.querySelectorAll('.gbc-toolbar button')).find(b => b.textContent === 'Stash')?.click(); }`);
-await sleep(1500);
-await setInput('.gbc-stashmsg', 'walkthrough stash');
-await clickBtn('.gbc-stashcreate', '创建 Stash');
-await sleep(3000);
-check('stash entry created', await ev(`(doc) => doc.querySelectorAll('.gbc-stashitem').length >= 1`));
-await ev(`(doc) => { Array.from(doc.querySelectorAll('.gbc-stashitem button')).find(b => b.textContent === '丢弃')?.click(); }`);
-await sleep(600);
-check('drop inline confirm shown', await ev(`(doc) => (doc.querySelector('.gbc-stashitem .gbc-confirm')?.textContent ?? '').includes('确认丢弃')`));
-await shot(wb, 'w4-stash-dark');
-await clickBtn('.gbc-stashitem .gbc-confirm', '取消');
+// 1) branch popup: local branches listed, search filters, Escape closes
+await clickTestId(ev, 'branch-widget');
+check('branch popup opens', await waitFor(() => has('branch-popup')));
+const branchText = await textOf(ev, '[data-testid="branch-popup"]');
+check('branch popup lists main', (branchText ?? '').includes('main'));
+await setInput(ev, '[data-testid="branch-search"]', 'main');
 await sleep(400);
-await esc();
+check('branch search keeps main', await ev(`(doc) => (doc.querySelector('[data-testid="branch-popup"]')?.innerText ?? '').includes('main')`));
+await setInput(ev, '[data-testid="branch-search"]', '');
+await shot(wb, 'w2-branch-dark');
+await escape(cdp);
+check('Escape closes branch popup', !(await has('branch-popup')));
 
-// 4) log overlay + commit detail (bug #23 regression: must show real diff)
-await ev(`(doc) => { Array.from(${repoRow('repoA')}.querySelectorAll('.gbc-toolbar button')).find(b => b.textContent === '日志')?.click(); }`);
-await sleep(2500);
-check('log lists entries', await ev(`(doc) => doc.querySelectorAll('.gbc-logitem').length >= 3`));
-await shot(wb, 'w5-log-dark');
-await ev(`(doc) => { doc.querySelector('.gbc-logitem')?.click(); }`);
+// 2) new changelist dialog → header appears → delete dialog → header gone
+await rightClick('[data-testid="changelist-default"]');
+await sleep(400);
+check('changelist menu offers New Changelist', (await menuLabels()).includes(STRINGS.menus.changelist.new));
+await clickTestId(ev, 'menu-new');
+check('new changelist dialog opens', await waitFor(() => has('dialog-newchangelist')));
+await setInput(ev, '[data-testid="changelist-name"]', 'Walkthrough');
+await setInput(ev, '[data-testid="changelist-comment"]', 'created by walkthrough');
+await shot(wb, 'w3-newlist-dark');
+await clickTestId(ev, 'dialog-ok');
+const listGone = () => ev(`(doc) => !Array.from(doc.querySelectorAll('[data-testid^="changelist-"]')).some(h => h.innerText.includes('Walkthrough'))`);
+check('Walkthrough list header appears', await waitFor(async () => !(await listGone())));
+const walkHeader = `(Array.from(doc.querySelectorAll('[data-testid^="changelist-"]')).find(h => h.innerText.includes('Walkthrough')))`;
+await ev(`(doc) => {
+  const h = ${walkHeader};
+  const r = h.getBoundingClientRect();
+  h.dispatchEvent(new doc.defaultView.MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: r.x + 30, clientY: r.y + 5 }));
+}`);
+await sleep(400);
+await clickTestId(ev, 'menu-delete');
+check('delete changelist dialog opens', await waitFor(() => has('dialog-deletechangelist')));
+await clickTestId(ev, 'dialog-ok');
+check('Walkthrough list removed', await waitFor(listGone));
+
+// 3) shelve flow: highlight a file → toolbar Shelve → dialog → Shelf tab entry → unshelve → delete entry
+await ev(`(doc) => ${firstFileRow}?.click()`);
+await sleep(300);
+check('shelve toolbar enabled with selection', await ev(`(doc) => doc.querySelector('[data-testid="tool-shelve"]')?.disabled === false`));
+await clickTestId(ev, 'tool-shelve');
+check('shelve dialog opens', await waitFor(() => has('dialog-shelve')));
+await setInput(ev, '[data-testid="shelve-name"]', 'walkthrough shelf');
+check('shelve dialog lists selected files', await ev(`(doc) => (doc.querySelector('[data-testid="shelve-files"]')?.innerText ?? '').length > 0`));
+await shot(wb, 'w4-shelve-dark');
+await clickTestId(ev, 'dialog-ok');
+await sleep(1500);
+await clickTestId(ev, 'tab-shelf');
+check('shelf entry created', await waitFor(() => has('shelf-entry')));
+check('shelf entry named walkthrough shelf', await ev(`(doc) => (doc.querySelector('[data-testid="shelf-entry"]')?.innerText ?? '').includes('walkthrough shelf')`));
+await ev(`(doc) => doc.querySelector('[data-testid="shelf-entry"] .gbc-chevron')?.click()`);
+await sleep(400);
+check('shelf entry expands to files', await has('shelf-file'));
+await dblClick('[data-testid="shelf-entry"] .gbc-shelfrow');
+check('unshelve dialog opens', await waitFor(() => has('dialog-unshelve')));
+check('unshelve targets a changelist (changelist mode)', await has('unshelve-target'));
+check('unshelve remove-after option present', await has('unshelve-removeafter'));
+await shot(wb, 'w5-unshelve-dark');
+await clickTestId(ev, 'dialog-ok');
+await sleep(2000);
+await rightClick('[data-testid="shelf-entry"] .gbc-shelfrow');
+await sleep(400);
+const shelfMenu = await menuLabels();
+check('shelf menu = IDEA set', JSON.stringify(shelfMenu) === JSON.stringify([
+  STRINGS.menus.shelfEntry.unshelve, STRINGS.menus.shelfEntry.restore, STRINGS.menus.shelfEntry.createPatch,
+  STRINGS.menus.shelfEntry.copyPatch, STRINGS.menus.shelfEntry.importPatches, STRINGS.menus.shelfEntry.importClipboard,
+  STRINGS.menus.shelfEntry.delete,
+]));
+await clickTestId(ev, 'menu-delete');
+check('delete shelf dialog opens', await waitFor(() => has('dialog-deleteshelf')));
+await clickTestId(ev, 'dialog-ok');
+check('shelf entry deleted', await waitFor(async () => !(await has('shelf-entry'))));
+await clickTestId(ev, 'tab-commit');
+await sleep(800);
+check('unshelve restored file rows', await ev(`(doc) => doc.querySelectorAll('[data-testid="file-row"]').length >= 3`));
+
+// 4) stash flow: create via dialog → entry listed → pop restores changes
+await clickTestId(ev, 'tab-stash');
+await sleep(1000);
+await clickTestId(ev, 'stash-create');
+check('stash create dialog opens', await waitFor(() => has('dialog-stash')));
+await setInput(ev, '[data-testid="stash-message"]', 'walkthrough stash');
+await shot(wb, 'w6-stash-dark');
+await clickTestId(ev, 'dialog-ok');
+check('stash entry created', await waitFor(() => has('stash-entry')));
+check('stash entry carries message', await ev(`(doc) => (doc.querySelector('[data-testid="stash-entry"]')?.innerText ?? '').includes('walkthrough stash')`));
+await rightClick('[data-testid="stash-entry"]');
+await sleep(400);
+check('stash menu = Apply/Pop/Drop', JSON.stringify(await menuLabels()) === JSON.stringify([
+  STRINGS.menus.stashEntry.apply, STRINGS.menus.stashEntry.pop, STRINGS.menus.stashEntry.drop,
+]));
+await clickTestId(ev, 'menu-pop');
+check('pop stash dialog opens', await waitFor(() => has('dialog-popstash')));
+await clickTestId(ev, 'dialog-ok');
+check('stash popped (list empty again)', await waitFor(async () => !(await has('stash-entry'))));
+await clickTestId(ev, 'tab-commit');
+await sleep(1000);
+check('pop restored file rows', await ev(`(doc) => doc.querySelectorAll('[data-testid="file-row"]').length >= 3`));
+
+// 5) Log view (separate Alt+9 webview): entries + commit detail editor tab
+await openView(wb, 'Log');
+const log = await panel('log-panel');
+await selectOption(log.ev, '[data-testid="log-repo"]', 'repoA');
+check('log lists entries', await waitFor(() => log.ev(`(doc) => doc.querySelectorAll('[data-testid="log-entry"]').length >= 2`)));
+await shot(wb, 'w7-log-dark');
+const oid = await log.ev(`(doc) => doc.querySelector('[data-testid="log-entry"]')?.getAttribute('data-oid') ?? ''`);
+await log.ev(`(doc) => doc.querySelector('[data-testid="log-entry"] .gbc-loghash')?.click()`);
 await sleep(4000);
 const tabLabel = await wb.eval(`Array.from(document.querySelectorAll('.tab .label-name')).map(e => e.textContent).join(' | ')`);
-console.log('editor tabs:', tabLabel);
-check('commit detail tab opened', /repoA · [0-9a-f]{7}/.test(tabLabel));
-await shot(wb, 'w6-commitdiff-dark');
-const noChanged = await wb.eval(`!!Array.from(document.querySelectorAll('.monaco-editor, .multi-diff-editor, [class*=empty]')).find(e => (e.textContent || '').includes('No Changed Files'))`);
-check('commit detail not "No Changed Files"', !noChanged);
-await esc();
+check('commit detail tab opened', tabLabel.includes(oid.slice(0, 7)));
+await shot(wb, 'w8-commitdiff-dark');
+await wb.eval(`(() => {
+  const tab = Array.from(document.querySelectorAll('.tab')).find(t => (t.textContent || '').includes(${JSON.stringify(oid.slice(0, 7))}));
+  tab?.querySelector('.tab-close')?.click();
+})()`);
+await sleep(800);
+log.cdp.ws.close();
+await openView(wb, 'Commit');
 
-// 5) abort-confirm overlay on conflicted repoC
-const abortVisible = await ev(`(doc) => {
-  const row = ${repoRow('repoC')};
-  return !!row && Array.from(row.querySelectorAll('button')).some(b => b.textContent.includes('中止合并'));
-}`);
-check('repoC shows 中止合并 (conflict state)', abortVisible);
-if (abortVisible) {
-  await ev(`(doc) => { Array.from(${repoRow('repoC')}.querySelectorAll('button')).find(b => b.textContent.includes('中止合并'))?.click(); }`);
-  await sleep(800);
-  check('abort confirm overlay shown', await ev(`(doc) => (doc.querySelector('.gbc-confirm')?.textContent ?? '').includes('确认中止')`));
-  await shot(wb, 'w7-abort-dark');
-  await clickBtn('.gbc-confirm', '取消');
-  await sleep(400);
-}
-
-// 6) keyboard navigation in the changes tree
-await ev(`(doc) => { doc.querySelector('.gbc-filerow')?.focus(); }`);
+// 6) keyboard: ArrowDown moves row focus; Ctrl+Alt+O toggles the options panel
+await ev(`(doc) => ${firstFileRow}?.focus()`);
 await sleep(300);
-const focused0 = await ev(`(doc) => doc.activeElement?.getAttribute('aria-label') ?? doc.activeElement?.className ?? 'none'`);
-await wv.key('ArrowDown', 'ArrowDown', 40);
+const focused0 = await ev(`(doc) => doc.activeElement?.getAttribute('data-path') ?? 'none'`);
+await cdp.key('ArrowDown', 'ArrowDown', 40);
 await sleep(300);
-const focused1 = await ev(`(doc) => doc.activeElement?.getAttribute('aria-label') ?? doc.activeElement?.className ?? 'none'`);
+const focused1 = await ev(`(doc) => doc.activeElement?.getAttribute('data-path') ?? 'none'`);
 check('ArrowDown moves row focus', focused0 !== focused1 && focused1 !== 'none');
-console.log('focus:', JSON.stringify(focused0), '->', JSON.stringify(focused1));
-await shot(wb, 'w8-keyboard-dark');
+await cdp.chord([{ key: 'o', code: 'KeyO', vk: 79, ctrl: true, alt: true }]);
+check('Ctrl+Alt+O opens options panel', await waitFor(() => has('options-panel')));
+check('options panel has sign-off + hooks toggles', await ev(`(doc) => !!doc.querySelector('[data-testid="option-signoff"]') && !!doc.querySelector('[data-testid="option-runhooks"]')`));
+await shot(wb, 'w9-options-dark');
+await cdp.chord([{ key: 'o', code: 'KeyO', vk: 79, ctrl: true, alt: true }]);
+await sleep(400);
+check('Ctrl+Alt+O closes options panel', !(await has('options-panel')));
+
+// 7) file context menu + rollback dialog (cancel, no destructive action)
+await rightClick(`[data-testid="file-row"]`);
+await sleep(400);
+const M = STRINGS.menus.file;
+check('file menu = IDEA set in order', JSON.stringify(await menuLabels()) === JSON.stringify([
+  M.showDiff, M.jumpToSource, M.openInSystemFolder, M.rollback, M.shelve, M.copyPath, M.delete,
+]));
+await shot(wb, 'w10-filemenu-dark');
+await clickTestId(ev, 'menu-rollback');
+check('rollback dialog opens with file list', await waitFor(() => has('dialog-rollback')) && await has('dialog-filelist'));
+await shot(wb, 'w11-rollback-dark');
+await clickTestId(ev, 'dialog-close');
+await sleep(300);
 
 // ---- light theme pass ----
 await wb.eval(`document.querySelector('.monaco-workbench')?.focus()`);
@@ -201,50 +255,41 @@ await wb.eval(`(() => {
 await sleep(1200);
 await wb.key('Enter', 'Enter', 13);
 await sleep(2500);
-const themeNow = await wb.eval(`getComputedStyle(document.body).getPropertyValue('--vscode-sideBar-background').trim()`);
-console.log('sidebar bg after theme switch:', themeNow);
-await shot(wb, 'w9-panel-light');
+await shot(wb, 'w12-panel-light');
 
-await ev(`(doc) => { ${repoRow('repoA')}?.querySelector('.gbc-branch')?.click(); }`);
-await sleep(1500);
-await shot(wb, 'w10-branch-light');
-// overlay mutual exclusivity: opening log while branch overlay is open must close the branch overlay
-await ev(`(doc) => { Array.from(${repoRow('repoA')}.querySelectorAll('.gbc-toolbar button')).find(b => b.textContent === '日志')?.click(); }`);
-await sleep(2000);
-check('log open closes branch overlay', !(await ev(`(doc) => !!doc.querySelector('.gbc-branchmgr')`)));
-check('log overlay visible', await ev(`(doc) => !!doc.querySelector('.gbc-logoverlay')`));
-await esc();
-// dark pass stashed repoA changes; apply the stash to restore hunks.txt before the light hunk shot
-await ev(`(doc) => { Array.from(${repoRow('repoA')}.querySelectorAll('.gbc-toolbar button')).find(b => b.textContent === 'Stash')?.click(); }`);
-await sleep(1500);
-await ev(`(doc) => { Array.from(doc.querySelectorAll('.gbc-stashitem button')).find(b => b.textContent === '应用')?.click(); }`);
-await sleep(3000);
-await esc();
-await ev(`(doc) => {
-  const row = Array.from(doc.querySelectorAll('.gbc-filerow')).find(r => r.textContent.includes('hunks.txt'));
-  const btn = row && Array.from(row.querySelectorAll('button')).find(b => b.textContent.trim() === 'Hunk');
-  if (btn) btn.click();
+await clickTestId(ev, 'branch-widget');
+await waitFor(() => has('branch-popup'));
+await shot(wb, 'w13-branch-light');
+await escape(cdp);
+
+await cdp.chord([{ key: 'o', code: 'KeyO', vk: 79, ctrl: true, alt: true }]);
+await waitFor(() => has('options-panel'));
+await shot(wb, 'w14-options-light');
+await cdp.chord([{ key: 'o', code: 'KeyO', vk: 79, ctrl: true, alt: true }]);
+await sleep(400);
+
+await ev(`(doc) => ${firstFileRow}?.click()`);
+await sleep(300);
+await clickTestId(ev, 'tool-rollback');
+await waitFor(() => has('dialog-rollback'));
+const contrast = await ev(`(doc) => {
+  const btn = doc.querySelector('[data-testid="dialog-rollback"] [data-testid="dialog-ok"]');
+  if (!btn) return null;
+  const cs = doc.defaultView.getComputedStyle(btn);
+  return { color: cs.color, bg: cs.backgroundColor };
 }`);
-await sleep(2500);
-check('light hunk overlay shows hunks', (await ev(`(doc) => doc.querySelectorAll('.gbc-hunk').length`)) >= 2);
-await shot(wb, 'w11-hunk-light');
-await esc();
-if (abortVisible) {
-  await ev(`(doc) => { Array.from(${repoRow('repoC')}.querySelectorAll('button')).find(b => b.textContent.includes('中止合并'))?.click(); }`);
-  await sleep(800);
-  const contrast = await ev(`(doc) => {
-    const btn = Array.from(doc.querySelectorAll('.gbc-btn-danger')).find(b => b.textContent.includes('确认中止'));
-    if (!btn) return null;
-    const cs = doc.defaultView.getComputedStyle(btn);
-    return { color: cs.color, bg: cs.backgroundColor };
-  }`);
-  console.log('light danger button colors:', JSON.stringify(contrast));
-  check('light danger button has contrast', !!contrast && contrast.color !== contrast.bg);
-  await shot(wb, 'w12-abort-light');
-  await clickBtn('.gbc-confirm', '取消');
-}
+check('light danger button has contrast', !!contrast && contrast.color !== contrast.bg);
+await shot(wb, 'w15-rollback-light');
+await clickTestId(ev, 'dialog-close');
+await sleep(300);
 
-console.log(failures.length === 0 ? '\nWALKTHROUGH: all checks passed' : `\nWALKTHROUGH FAILURES: ${failures.join('; ')}`);
+await clickTestId(ev, 'mode-toggle');
+check('mode switch dialog opens (light)', await waitFor(() => has('dialog-modeswitch')));
+const modeTitle = await ev(`(doc) => doc.querySelector('[data-testid="dialog-modeswitch"]')?.getAttribute('aria-label') ?? ''`);
+check('mode dialog title = Enable Staging Area', modeTitle === STRINGS.dialogs.modeEnableTitle);
+await shot(wb, 'w16-modeswitch-light');
+await clickTestId(ev, 'dialog-close');
+
+cdp.ws.close();
 wb.ws.close();
-wv.ws.close();
-process.exit(failures.length === 0 ? 0 : 1);
+finish('WALKTHROUGH');

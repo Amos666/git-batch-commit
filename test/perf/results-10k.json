@@ -1,21 +1,50 @@
 {
   "label": "10k",
   "budgets": {},
-  "coldFirstScreenMs": 3715,
-  "heapAfterRenderMB": 13,
-  "builtInRefreshMs": 1413,
-  "singleFileRefreshMs": 2393,
-  "ourPipelineAfterBuiltInMs": 980,
-  "extHostLagDuringRefreshMs": 3,
-  "stage100Ms": 51,
-  "commitResultMs": 2149,
-  "commitFullFeedbackMs": 2150,
-  "stageAll10kMs": 28,
-  "logFirstScreen300Ms": 53,
+  "metrics": {
+    "panel.init": [
+      2916,
+      3261
+    ],
+    "diff.data": [
+      234
+    ],
+    "inclusion.set": [
+      118
+    ],
+    "commit.translate": [
+      1495
+    ],
+    "commit.git": [
+      1360
+    ],
+    "commit.roundtrip": [
+      3315
+    ]
+  },
+  "coldFirstScreenMs": 9121,
+  "heapAfterRenderMB": 18,
+  "diffOpenRenderMs": 653,
+  "logFirstScreen300Ms": 130,
+  "builtInRefreshMs": 1390,
+  "singleFileRefreshMs": 2388,
+  "ourPipelineAfterBuiltInMs": 998,
+  "extHostLagDuringRefreshMs": 1,
+  "check100Ms": 50,
+  "commitResultMs": 3335,
+  "commitFullFeedbackMs": 3336,
+  "checkAll10kMs": 90,
+  "uncheckAll10kMs": 66,
   "longTasksMs": [
-    79,
-    88,
-    53
+    248,
+    208,
+    63,
+    62,
+    97,
+    62,
+    97,
+    84,
+    57
   ],
-  "heapFinalMB": 30
+  "heapFinalMB": 56
 }

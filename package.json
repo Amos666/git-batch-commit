@@ -2,8 +2,12 @@
   "name": "git-batch-commit",
   "displayName": "Git Batch Commit — IDEA-style Commit Panel",
   "description": "Batch-select files, review diffs, stage changes and commit across multiple repositories in an IntelliJ IDEA-style panel for VS Code.",
-  "version": "0.0.1",
+  "version": "0.1.2",
   "publisher": "git-batch-commit-dev",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Amos666/git-batch-commit.git"
+  },
   "license": "MIT",
   "private": true,
   "engines": {
@@ -42,6 +46,11 @@
           "id": "gitBatchCommit.commitPanel",
           "name": "Commit",
           "type": "webview"
+        },
+        {
+          "id": "gitBatchCommit.logPanel",
+          "name": "Log",
+          "type": "webview"
         }
       ]
     },
@@ -54,7 +63,47 @@
       },
       {
         "command": "gitBatchCommit.commit",
-        "title": "Commit Staged Changes",
+        "title": "Commit",
+        "category": "Git Batch Commit"
+      },
+      {
+        "command": "gitBatchCommit.commitAndPush",
+        "title": "Commit and Push…",
+        "category": "Git Batch Commit"
+      },
+      {
+        "command": "gitBatchCommit.push",
+        "title": "Push…",
+        "category": "Git Batch Commit"
+      },
+      {
+        "command": "gitBatchCommit.showDiff",
+        "title": "Show Diff",
+        "category": "Git Batch Commit"
+      },
+      {
+        "command": "gitBatchCommit.addToVcs",
+        "title": "Add to VCS",
+        "category": "Git Batch Commit"
+      },
+      {
+        "command": "gitBatchCommit.moveChangelist",
+        "title": "Move to Another Changelist…",
+        "category": "Git Batch Commit"
+      },
+      {
+        "command": "gitBatchCommit.toggleOptions",
+        "title": "Show Commit Options",
+        "category": "Git Batch Commit"
+      },
+      {
+        "command": "gitBatchCommit.setActiveChangelist",
+        "title": "Set Active Changelist",
+        "category": "Git Batch Commit"
+      },
+      {
+        "command": "gitBatchCommit.rollback",
+        "title": "Rollback…",
         "category": "Git Batch Commit"
       },
       {
@@ -82,13 +131,58 @@
         "command": "gitBatchCommit.commit",
         "key": "ctrl+alt+c",
         "mac": "cmd+alt+c",
-        "when": "gitBatchCommit.panelFocused"
+        "when": "gitBatchCommit.panelVisible && !gitBatchCommit.panelFocused"
       },
       {
         "command": "gitBatchCommit.refresh",
         "key": "ctrl+alt+r",
         "mac": "cmd+alt+r",
-        "when": "gitBatchCommit.panelFocused"
+        "when": "gitBatchCommit.panelVisible && !gitBatchCommit.panelFocused"
+      },
+      {
+        "command": "gitBatchCommit.commitAndPush",
+        "key": "ctrl+alt+shift+k",
+        "mac": "cmd+alt+shift+k",
+        "when": "gitBatchCommit.panelVisible && !gitBatchCommit.panelFocused"
+      },
+      {
+        "command": "gitBatchCommit.push",
+        "key": "ctrl+alt+shift+p",
+        "mac": "cmd+alt+shift+p",
+        "when": "gitBatchCommit.panelVisible && !gitBatchCommit.panelFocused"
+      },
+      {
+        "command": "gitBatchCommit.showDiff",
+        "key": "ctrl+alt+d",
+        "mac": "cmd+alt+d",
+        "when": "gitBatchCommit.panelVisible && !gitBatchCommit.panelFocused"
+      },
+      {
+        "command": "gitBatchCommit.addToVcs",
+        "key": "ctrl+alt+s",
+        "mac": "cmd+alt+s",
+        "when": "gitBatchCommit.panelVisible && !gitBatchCommit.panelFocused"
+      },
+      {
+        "command": "gitBatchCommit.toggleOptions",
+        "key": "ctrl+alt+o",
+        "mac": "cmd+alt+o",
+        "when": "gitBatchCommit.panelVisible && !gitBatchCommit.panelFocused"
+      },
+      {
+        "command": "gitBatchCommit.moveChangelist",
+        "key": "alt+shift+m",
+        "when": "gitBatchCommit.panelVisible && !gitBatchCommit.panelFocused"
+      },
+      {
+        "command": "gitBatchCommit.commitPanel.focus",
+        "key": "alt+0",
+        "mac": "alt+0"
+      },
+      {
+        "command": "gitBatchCommit.logPanel.focus",
+        "key": "alt+9",
+        "mac": "alt+9"
       }
     ],
     "configuration": {
@@ -137,6 +231,7 @@
   "scripts": {
     "build": "node esbuild.mjs",
     "watch": "node esbuild.mjs --watch",
+    "dev:webview": "npm run build && node scripts/serve-dev.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "vitest run",
     "test:watch": "vitest",

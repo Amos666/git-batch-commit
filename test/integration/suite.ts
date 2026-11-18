@@ -7,12 +7,20 @@ import { acquireGitApi } from '../../src/adapter/gitApi';
 import { mapLocalBranches } from '../../src/adapter/branchRefs';
 import { RepoRegistry, repoIdFor } from '../../src/adapter/repoRegistry';
 import { BatchOrchestrator } from '../../src/core/batchOrchestrator';
+import { CommitTranslator } from '../../src/core/commitTranslator';
 import { InclusionModel } from '../../src/core/inclusionModel';
 import { MiniRunner } from '../../src/core/miniRunner';
 import { OperationTracker } from '../../src/core/operationTracker';
 import { StatusService } from '../../src/core/statusService';
+import { createVscodeGitKernel } from '../../src/kernel/vscodeGitKernel';
 import type { ProtocolError } from '../../src/protocol/errors';
-import { DiffService } from '../../src/services/diffService';
+import type { ChangelistState } from '../../src/protocol/models';
+import { EditorBridge } from '../../src/ui/editorBridge';
+import { ChangelistService } from '../../src/services/changelistService';
+import type { ChangelistStorage } from '../../src/services/changelistService';
+import { ChecksService } from '../../src/services/checksService';
+import { DiffDataService } from '../../src/services/diffDataService';
+import { EditorActions } from '../../src/ui/editorActions';
 import { HunkService } from '../../src/services/hunkService';
 import { StashService } from '../../src/services/stashService';
 import { ShelfService } from '../../src/services/shelfService';
@@ -63,17 +71,28 @@ export async function run(): Promise<void> {
   );
   ok('multi-root repository discovery via built-in API');
 
-  const registry = new RepoRegistry(api);
+  const kernel = await createVscodeGitKernel(new MiniRunner());
+  const registry = new RepoRegistry(kernel);
   const status = new StatusService(registry, 50);
   const inclusion = new InclusionModel(registry);
   const tracker = new OperationTracker();
-  const orchestrator = new BatchOrchestrator(registry, inclusion, tracker, () => ({ stopOnFirstRepoError: true }));
+  const mini = new MiniRunner();
+  const hunk = new HunkService(registry, mini);
+  const translator = new CommitTranslator(registry, inclusion, hunk, mini);
+  const exclusionRequests: string[][] = [];
+  const orchestrator = new BatchOrchestrator(registry, inclusion, translator, tracker, () => ({
+    stopOnFirstRepoError: true,
+    confirmIndexExclusion: async (_repoId, paths) => {
+      exclusionRequests.push(paths);
+      return true;
+    },
+  }));
 
   const repoA = api.repositories.find((r) => r.rootUri.fsPath === repoAPath);
   const repoB = api.repositories.find((r) => r.rootUri.fsPath === repoBPath);
   assert.ok(repoA && repoB);
-  const idA = repoIdFor(repoA.rootUri);
-  const idB = repoIdFor(repoB.rootUri);
+  const idA = repoIdFor(repoA.rootUri.fsPath);
+  const idB = repoIdFor(repoB.rootUri.fsPath);
 
   try {
     // 3. state mapping consistency with built-in state
@@ -114,6 +133,7 @@ export async function run(): Promise<void> {
     const batch = await orchestrator.run({
       repoIds: [idA, idB],
       message: 'phase0: batch commit test',
+      options: {},
       expectedStaged: { [idA]: ['modified.txt', '中文 文件.txt'], [idB]: ['b.txt'] },
     });
     assert.strictEqual(batch.length, 2);
@@ -126,14 +146,14 @@ export async function run(): Promise<void> {
     ok('batch commit: A ok + fresh oid, B hook failure classified, stop-on-error, B HEAD unchanged');
 
     // 8. empty index pre-check
-    const empty = await orchestrator.run({ repoIds: [idA], message: 'should not commit' });
+    const empty = await orchestrator.run({ repoIds: [idA], message: 'should not commit', options: {} });
     assert.strictEqual(empty[0]?.ok, false);
     assert.strictEqual(empty[0]?.error?.code, 'NO_CHANGES');
     ok('empty index blocked with NO_CHANGES');
 
     // 9. empty message rejected
     await assert.rejects(
-      () => orchestrator.run({ repoIds: [idA], message: '   ' }),
+      () => orchestrator.run({ repoIds: [idA], message: '   ', options: {} }),
       (err: ProtocolError) => err.code === 'EMPTY_MESSAGE',
     );
     ok('empty message rejected with EMPTY_MESSAGE');
@@ -166,8 +186,8 @@ export async function run(): Promise<void> {
     ok('worktree/submodule/nested discovered with correct kinds');
 
     // 12. worktree state maps correctly (branch wt + its own change)
-    const idW = repoIdFor(repoW.rootUri);
-    const idC = repoIdFor(repoC.rootUri);
+    const idW = repoIdFor(repoW.rootUri.fsPath);
+    const idC = repoIdFor(repoC.rootUri.fsPath);
     await waitFor(() => status.snapshot(idW) !== undefined, 'worktree snapshot available');
     const snapW = status.snapshot(idW);
     assert.ok(snapW);
@@ -176,7 +196,7 @@ export async function run(): Promise<void> {
     ok('worktree state mapping (branch + changes)');
 
     // 13. amend rewrites HEAD message without staged files
-    const amend = await orchestrator.run({ repoIds: [idA], message: 'phase0: amended message', amend: true });
+    const amend = await orchestrator.run({ repoIds: [idA], message: 'phase0: amended message', options: { amend: true } });
     assert.strictEqual(amend[0]?.ok, true, `amend failed: ${JSON.stringify(amend[0]?.error)}`);
     const amendedOid = amend[0]?.commitOid;
     assert.ok(amendedOid && amendedOid !== batch[0]?.commitOid, 'amend must produce a new oid');
@@ -190,7 +210,7 @@ export async function run(): Promise<void> {
     await waitFor(() => repoC.state.indexChanges.length === 1 && repoW.state.indexChanges.length === 1, 'cancel-test files staged');
     const headWBefore = repoW.state.HEAD?.commit;
     const cancelStart = Date.now();
-    const cancelRun = orchestrator.run({ repoIds: [idC, idW], message: 'phase0: cancel timing test' });
+    const cancelRun = orchestrator.run({ repoIds: [idC, idW], message: 'phase0: cancel timing test', options: {} });
     await sleep(500);
     orchestrator.cancelRemaining();
     const cancelResults = await cancelRun;
@@ -202,7 +222,7 @@ export async function run(): Promise<void> {
     ok(`cancel-remaining timing: in-flight completes (${elapsed}ms), later repo skipped`);
 
     // 15. commit detail view opens via diffBetween (multi-diff or fallback)
-    const diff = new DiffService(api, registry);
+    const diff = new EditorBridge(registry);
     assert.ok(amendedOid);
     const amendParent = amendedCommit.parents[0];
     assert.ok(amendParent);
@@ -238,7 +258,6 @@ export async function run(): Promise<void> {
     ok('diff guards: binary/large blocked with DIFF_GUARDED, force opens');
 
     // 17. hunk-level partial staging (C3 blob approach)
-    const hunk = new HunkService(registry, new MiniRunner());
     const hunksAbs = path.join(repoAPath, 'hunks.txt');
     const hlist = await hunk.list(idA, 'hunks.txt', 'worktree');
     assert.strictEqual(hlist.hunks.length, 3, `expected 3 hunks, got ${hlist.hunks.length}`);
@@ -289,7 +308,7 @@ export async function run(): Promise<void> {
     const sign = await orchestrator.run({
       repoIds: [idA],
       message: 'p1: signoff test',
-      signoff: true,
+      options: { signoff: true },
       expectedStaged: { [idA]: ['untracked.txt'] },
     });
     assert.strictEqual(sign[0]?.ok, true, `signoff commit failed: ${JSON.stringify(sign[0]?.error)}`);
@@ -411,6 +430,7 @@ export async function run(): Promise<void> {
     const mergeRun = await orchestrator.run({
       repoIds: [idC],
       message: 'p1: merge resolved',
+      options: {},
       expectedStaged: { [idC]: ['c.txt'] },
     });
     assert.strictEqual(mergeRun[0]?.ok, true, `merge commit failed: ${JSON.stringify(mergeRun[0]?.error)}`);
@@ -445,19 +465,29 @@ export async function run(): Promise<void> {
     await vscode.commands.executeCommand('gitBatchCommit.commit');
     const pkg = ext.packageJSON as {
       contributes: {
-        keybindings?: { command: string; when?: string }[];
+        keybindings?: { command: string; key?: string; when?: string }[];
         configuration: { properties: Record<string, unknown> };
       };
     };
     const kbs = pkg.contributes.keybindings ?? [];
+    // chords dispatch locally while the panel has focus; the host binding only
+    // fires when the panel is visible but unfocused (double dispatch would
+    // toggle twice and the workbench steals iframe focus on handled keys)
+    const chordWhen = 'gitBatchCommit.panelVisible && !gitBatchCommit.panelFocused';
     assert.ok(
-      kbs.some((k) => k.command === 'gitBatchCommit.commit' && k.when === 'gitBatchCommit.panelFocused'),
-      'commit keybinding must be scoped to panel focus',
+      kbs.some((k) => k.command === 'gitBatchCommit.commit' && k.when === chordWhen),
+      'commit keybinding must be scoped to panel visibility without focus',
     );
     assert.ok(
-      kbs.every((k) => k.when === 'gitBatchCommit.panelFocused'),
-      'all panel keybindings must use the focus when-clause',
+      kbs.every((k) => k.when === chordWhen || /\.focus$/.test(k.command)),
+      'all panel keybindings must use the visibility when-clause (view switchers exempt)',
     );
+    assert.ok(
+      kbs.some((k) => k.command === 'gitBatchCommit.logPanel.focus' && k.key === 'alt+9'),
+      'Alt+9 must focus the Log view',
+    );
+    await vscode.commands.executeCommand('gitBatchCommit.logPanel.focus');
+    await vscode.commands.executeCommand('gitBatchCommit.commitPanel.focus');
     assert.ok(pkg.contributes.configuration.properties['gitBatchCommit.log.pageSize'], 'log.pageSize setting missing');
     ok('keybindings scoped by when-clause; commit command + log.pageSize registered');
 
@@ -621,6 +651,7 @@ export async function run(): Promise<void> {
     const revertRun = await orchestrator.run({
       repoIds: [idC],
       message: 'p2: revert pick source',
+      options: {},
       expectedStaged: { [idC]: ['pick.txt'] },
     });
     assert.strictEqual(revertRun[0]?.ok, true, `revert commit failed: ${JSON.stringify(revertRun[0]?.error)}`);
@@ -670,10 +701,10 @@ export async function run(): Promise<void> {
     );
     assert.strictEqual(fs.readFileSync(undoProbeAbs, 'utf8'), 'undo me\n', 'soft reset must keep worktree content');
     // root commit has no parent → rejected (nested repo has exactly one commit)
-    const idNested = repoIdFor(repoNested.rootUri);
+    const idNested = repoIdFor(repoNested.rootUri.fsPath);
     await assert.rejects(
       () => seq.undoCommit(idNested),
-      (err: ProtocolError) => err.code === 'GENERIC' && /根提交/.test(err.message),
+      (err: ProtocolError) => err.code === 'GENERIC' && /root commit/.test(err.message),
     );
     // pushed HEAD → rejected
     const bareDir = path.join(fixtureDir, '.undo-remote.git');
@@ -682,7 +713,7 @@ export async function run(): Promise<void> {
     gitA('push', '-u', 'undo-origin', 'main');
     await assert.rejects(
       () => seq.undoCommit(idA),
-      (err: ProtocolError) => err.code === 'GENERIC' && /远端/.test(err.message),
+      (err: ProtocolError) => err.code === 'GENERIC' && /remote branch/.test(err.message),
     );
     gitA('remote', 'remove', 'undo-origin');
     fs.rmSync(bareDir, { recursive: true, force: true });
@@ -707,7 +738,7 @@ export async function run(): Promise<void> {
     );
     await assert.rejects(
       () => seq.undoCommit(idC),
-      (err: ProtocolError) => err.code === 'GENERIC' && /进行中/.test(err.message),
+      (err: ProtocolError) => err.code === 'GENERIC' && /in progress/.test(err.message),
     );
     await seq.abort(idC);
     await waitFor(
@@ -733,10 +764,296 @@ export async function run(): Promise<void> {
     await waitFor(() => repoC.state.mergeChanges.length === 1, 'walkthrough conflict visible in state');
     ok('fixture left in merge-conflict state for visual walkthrough');
 
+    // 39. changelist translation: externally staged file excluded after confirm, only checked file committed
+    fs.writeFileSync(path.join(repoAPath, 'cl-checked.txt'), 'checked\n');
+    fs.writeFileSync(path.join(repoAPath, 'cl-external.txt'), 'external\n');
+    gitA('add', 'cl-external.txt');
+    await waitFor(() => repoA.state.indexChanges.some((c) => c.uri.fsPath.endsWith('cl-external.txt')), 'external file staged');
+    const clRun = await orchestrator.run({
+      repoIds: [idA],
+      message: 'p1: changelist translation',
+      options: {},
+      expectedIncluded: { [idA]: [{ path: 'cl-checked.txt' }] },
+    });
+    assert.strictEqual(clRun[0]?.ok, true, `changelist commit failed: ${JSON.stringify(clRun[0]?.error)}`);
+    assert.deepStrictEqual(exclusionRequests, [['cl-external.txt']], 'exclusion confirm must list the external file');
+    const committedFiles = gitA('show', '--name-only', '--format=', 'HEAD').toString().trim().split('\n');
+    assert.deepStrictEqual(committedFiles, ['cl-checked.txt'], 'commit must contain only the checked file');
+    assert.strictEqual(fs.readFileSync(path.join(repoAPath, 'cl-external.txt'), 'utf8'), 'external\n', 'excluded worktree file untouched');
+    await waitFor(
+      () => repoA.state.untrackedChanges.some((c) => c.uri.fsPath.endsWith('cl-external.txt')) ||
+        repoA.state.workingTreeChanges.some((c) => c.uri.fsPath.endsWith('cl-external.txt')),
+      'excluded file back to untracked',
+    );
+    ok('changelist translation: exclusion confirmed, only checked file committed, worktree untouched');
+
+    // 40. race validation: missing path → INCLUDED_MISMATCH; stale hunk id → HUNK_CONFLICT; index untouched
+    const missing = await orchestrator.run({
+      repoIds: [idA],
+      message: 'p1: should block',
+      options: {},
+      expectedIncluded: { [idA]: [{ path: 'does-not-exist.txt' }] },
+    });
+    assert.strictEqual(missing[0]?.ok, false);
+    assert.strictEqual(missing[0]?.error?.code, 'INCLUDED_MISMATCH');
+    assert.notStrictEqual(missing[0]?.indexModified, true, 'validation failure must not touch the index');
+    const staleHunk = await orchestrator.run({
+      repoIds: [idA],
+      message: 'p1: should block',
+      options: {},
+      expectedIncluded: { [idA]: [{ path: 'hunks.txt', selection: { hunkIds: [99] } }] },
+    });
+    assert.strictEqual(staleHunk[0]?.ok, false);
+    assert.strictEqual(staleHunk[0]?.error?.code, 'HUNK_CONFLICT');
+    ok('race validation: INCLUDED_MISMATCH + HUNK_CONFLICT block before any index mutation');
+
+    // 41. line-level partial commit: only the selected addition lands; remainder stays in worktree
+    const linesAbs = path.join(repoAPath, 'lines.txt');
+    fs.writeFileSync(linesAbs, 'a\nb\nc\nd\ne\n');
+    gitA('add', 'lines.txt');
+    gitA('commit', '-m', 'p1: lines base');
+    fs.writeFileSync(linesAbs, 'a\nB\nc\nD\ne\n');
+    await waitFor(() => repoA.state.workingTreeChanges.some((c) => c.uri.fsPath === linesAbs), 'lines.txt change visible');
+    const linesList = await hunk.list(idA, 'lines.txt', 'worktree');
+    assert.strictEqual(linesList.hunks.length, 1, 'adjacent edits must form a single hunk');
+    const lineRun = await orchestrator.run({
+      repoIds: [idA],
+      message: 'p1: line partial',
+      options: {},
+      expectedIncluded: { [idA]: [{ path: 'lines.txt', selection: { hunkIds: [0], lines: { 0: [1] } } }] },
+    });
+    assert.strictEqual(lineRun[0]?.ok, true, `line partial commit failed: ${JSON.stringify(lineRun[0]?.error)}`);
+    assert.strictEqual(gitA('show', 'HEAD:lines.txt').toString(), 'a\nB\nc\nd\ne\n', 'only the selected line may be committed');
+    assert.strictEqual(fs.readFileSync(linesAbs, 'utf8'), 'a\nB\nc\nD\ne\n', 'worktree keeps the unselected change');
+    // unstagePartial removes just the selected addition from a fully staged file
+    await inclusion.stage(idA, ['lines.txt']);
+    await waitFor(() => repoA.state.indexChanges.some((c) => c.uri.fsPath === linesAbs), 'lines.txt fully staged');
+    const stagedLines = await hunk.list(idA, 'lines.txt', 'staged');
+    assert.strictEqual(stagedLines.hunks.length, 1);
+    await hunk.unstagePartial(idA, 'lines.txt', { hunkIds: [0], lines: { 0: [3] } });
+    await waitFor(() => !repoA.state.indexChanges.some((c) => c.uri.fsPath === linesAbs), 'lines.txt unstaged via line selection');
+    assert.strictEqual((await repoA.buffer('', 'lines.txt')).toString('utf8'), 'a\nB\nc\nd\ne\n', 'index back to HEAD blob');
+    ok('line-level partial commit + unstagePartial: selected lines only, worktree untouched');
+
+    // 42. author override through the orchestrator (kernel routes to the env-injected mini fallback)
+    const authorRun = await orchestrator.run({
+      repoIds: [idA],
+      message: 'p1: author override',
+      options: { author: { name: 'Override Author', email: 'override@test.local' } },
+      expectedIncluded: { [idA]: [{ path: 'cl-external.txt' }] },
+    });
+    assert.strictEqual(authorRun[0]?.ok, true, `author commit failed: ${JSON.stringify(authorRun[0]?.error)}`);
+    assert.strictEqual(gitA('log', '-1', '--format=%an <%ae>').toString().trim(), 'Override Author <override@test.local>');
+    assert.strictEqual(gitA('log', '-1', '--format=%cn').toString().trim(), 'Phase0 Test', 'committer must stay the repo identity');
+    ok('author override: git log author overridden, committer unchanged');
+
+    // 42b. changelist-mode message-only amend: empty checked set must not block
+    const clAmend = await orchestrator.run({
+      repoIds: [idA],
+      message: 'p1: author override (amended)',
+      options: { amend: true },
+      expectedIncluded: { [idA]: [] },
+    });
+    assert.strictEqual(clAmend[0]?.ok, true, `changelist amend failed: ${JSON.stringify(clAmend[0]?.error)}`);
+    assert.strictEqual(gitA('log', '-1', '--format=%s').toString().trim(), 'p1: author override (amended)');
+    assert.strictEqual(gitA('log', '-1', '--format=%an').toString().trim(), 'Override Author', 'amend must preserve the original author');
+    const nothingChecked = await orchestrator.run({
+      repoIds: [idA],
+      message: 'p1: should block',
+      options: {},
+      expectedIncluded: { [idA]: [] },
+    });
+    assert.strictEqual(nothingChecked[0]?.error?.code, 'NO_CHANGES');
+    ok('changelist amend: message-only rewrite with empty checked set; empty non-amend blocked');
+
+    // 43. mode migration: confirm required, backup written, index↔checked translation both ways
+    let saved: ChangelistState | undefined;
+    let backedUp: ChangelistState | undefined;
+    const storage: ChangelistStorage = {
+      load: () => saved,
+      save: async (state) => {
+        saved = state;
+      },
+      backup: async (state) => {
+        backedUp = state;
+      },
+    };
+    const changelists = new ChangelistService(status, inclusion, hunk, storage, () => ({
+      defaultSelectAll: false,
+      selectUntracked: false,
+    }));
+    assert.strictEqual(changelists.get().mode, 'changelist');
+    await assert.rejects(
+      () => changelists.setMode('staging', false),
+      (err: ProtocolError) => err.code === 'MODE_MIGRATION_REQUIRED',
+    );
+    changelists.setIncluded([{ repoId: idA, path: 'lines.txt' }], true);
+    const toStaging = changelists.previewMigration('staging');
+    assert.ok(toStaging.checkedToStage >= 1, 'checked file must be counted for staging');
+    await changelists.setMode('staging', true);
+    assert.ok(backedUp, 'migration must back up the previous state');
+    assert.strictEqual(changelists.get().mode, 'staging');
+    assert.strictEqual(changelists.get().lists.length, 1, 'staging mode collapses to the default list');
+    await waitFor(() => repoA.state.indexChanges.some((c) => c.uri.fsPath === linesAbs), 'checked file staged by migration');
+    await changelists.setMode('changelist', true);
+    assert.strictEqual(changelists.get().mode, 'changelist');
+    assert.strictEqual(backedUp?.mode, 'staging', 'reverse migration backs up the staging state');
+    const defList = changelists.get().lists.find((l) => l.isDefault);
+    assert.ok(defList?.checked.some((r) => r.repoId === idA && r.path === 'lines.txt'), 'staged entry must become checked');
+    const feature = changelists.create('Feature X');
+    changelists.move([{ repoId: idA, path: 'lines.txt' }], feature.id, true);
+    assert.ok(changelists.get().lists.find((l) => l.id === feature.id)?.files.some((r) => r.path === 'lines.txt'));
+    const preview = changelists.previewMigration('staging');
+    assert.strictEqual(preview.listsToRemove, 1);
+    assert.ok(preview.checkedToStage >= 1);
+    changelists.dispose();
+    ok('mode migration: confirm gate, backup, checked→index and index→checked, collapse');
+
+    // 44. multi-repo changelist batch: per-repo translation, both commits land
+    const multi = await orchestrator.run({
+      repoIds: [idA, idW],
+      message: 'p1: multi changelist batch',
+      options: {},
+      expectedIncluded: { [idA]: [{ path: 'lines.txt' }], [idW]: [{ path: 'modified.txt' }] },
+    });
+    assert.strictEqual(multi[0]?.ok, true, `repoA batch commit failed: ${JSON.stringify(multi[0]?.error)}`);
+    assert.strictEqual(multi[1]?.ok, true, `repoW batch commit failed: ${JSON.stringify(multi[1]?.error)}`);
+    assert.strictEqual(gitA('show', '--name-only', '--format=', 'HEAD').toString().trim(), 'lines.txt');
+    const wFiles = execFileSync('git', ['show', '--name-only', '--format=', 'HEAD'], { cwd: repoWPath }).toString().trim();
+    assert.strictEqual(wFiles, 'modified.txt');
+    ok('multi-repo changelist batch: per-repo translation + commit');
+
+    // 45. diff.data: worktree/staged/head sides return correct texts + hunks
+    const diffData = new DiffDataService(registry, new MiniRunner());
+    const dvAbs = path.join(repoAPath, 'dv-probe.txt');
+    fs.writeFileSync(dvAbs, 'l1\nl2\nl3\n');
+    gitA('add', 'dv-probe.txt');
+    gitA('commit', '-m', 'p3: dv base');
+    fs.writeFileSync(dvAbs, 'l1\nL2\nl3\n');
+    await waitFor(() => repoA.state.workingTreeChanges.some((c) => c.uri.fsPath === dvAbs), 'dv-probe change visible');
+    const wt = await diffData.get(idA, 'dv-probe.txt', 'worktree', false, 2048);
+    assert.strictEqual(wt.binary, false);
+    assert.strictEqual(wt.oldText, 'l1\nl2\nl3\n', 'worktree side old must be the index blob');
+    assert.strictEqual(wt.newText, 'l1\nL2\nl3\n');
+    assert.strictEqual(wt.hunks.length, 1);
+    await inclusion.stage(idA, ['dv-probe.txt']);
+    await waitFor(() => repoA.state.indexChanges.some((c) => c.uri.fsPath === dvAbs), 'dv-probe staged');
+    const st = await diffData.get(idA, 'dv-probe.txt', 'staged', false, 2048);
+    assert.strictEqual(st.oldText, 'l1\nl2\nl3\n', 'staged side old must be HEAD');
+    assert.strictEqual(st.newText, 'l1\nL2\nl3\n', 'staged side new must be the index blob');
+    assert.strictEqual(st.hunks.length, 1);
+    const hd = await diffData.get(idA, 'dv-probe.txt', 'head', false, 2048);
+    assert.strictEqual(hd.oldText, 'l1\nl2\nl3\n');
+    assert.strictEqual(hd.newText, 'l1\nL2\nl3\n');
+    assert.strictEqual(hd.hunks.length, 1);
+    const wt2 = await diffData.get(idA, 'dv-probe.txt', 'worktree', false, 2048);
+    assert.strictEqual(wt2.hunks.length, 0, 'index == worktree must yield no hunks');
+    assert.strictEqual(wt2.oldText, wt2.newText);
+    await inclusion.unstage(idA, ['dv-probe.txt']);
+    await waitFor(() => !repoA.state.indexChanges.some((c) => c.uri.fsPath === dvAbs), 'dv-probe unstaged');
+    ok('diff.data: worktree/staged/head texts + hunks; identical index↔worktree empty');
+
+    // 46. diff.data guards: binary guard + force flag, DIFF_GUARDED + force, untracked synthetic add
+    await assert.rejects(
+      () => diffData.get(idA, 'binary.bin', 'worktree', false, 2048),
+      (err: ProtocolError) => err.code === 'DIFF_GUARDED' && err.diffContext?.path === 'binary.bin',
+    );
+    const bin = await diffData.get(idA, 'binary.bin', 'worktree', true, 2048);
+    assert.strictEqual(bin.binary, true, 'forced binary diff must be flagged, not rendered');
+    await assert.rejects(
+      () => diffData.get(idA, 'big.txt', 'head', false, 2048),
+      (err: ProtocolError) => err.code === 'DIFF_GUARDED' && err.diffContext?.path === 'big.txt',
+    );
+    const forced = await diffData.get(idA, 'big.txt', 'head', true, 2048);
+    assert.strictEqual(forced.tooLarge, true, 'force must bypass the guard into tooLarge');
+    assert.strictEqual(forced.newText, '');
+    const dvNewAbs = path.join(repoAPath, 'dv-new.txt');
+    fs.writeFileSync(dvNewAbs, 'fresh\n');
+    await waitFor(
+      () =>
+        repoA.state.untrackedChanges.some((c) => c.uri.fsPath === dvNewAbs) ||
+        repoA.state.workingTreeChanges.some((c) => c.uri.fsPath === dvNewAbs),
+      'dv-new untracked visible',
+    );
+    const un = await diffData.get(idA, 'dv-new.txt', 'worktree', false, 2048);
+    assert.strictEqual(un.oldText, '', 'untracked old side must be empty');
+    assert.strictEqual(un.newText, 'fresh\n');
+    assert.strictEqual(un.hunks.length, 1, 'untracked file must expose one synthetic add hunk');
+    ok('diff.data guards: binary guard + force flag, large DIFF_GUARDED + force tooLarge, untracked synthetic add');
+
+    // 47. checks.run: todo issues, analyze ok, unavailable ids, dependencies skipped, progress + repo filter
+    fs.writeFileSync(path.join(repoAPath, 'dv-todo.txt'), 'x\n// TODO: fix me\n');
+    fs.writeFileSync(path.join(repoBPath, 'dv-todo-b.txt'), '// FIXME: other repo\n');
+    const checks = new ChecksService(registry, new EditorActions());
+    const progress: string[] = [];
+    const report = await checks.run(
+      [idA],
+      ['todo', 'analyze', 'rearrange', 'dependencies'],
+      [
+        { repoId: idA, path: 'dv-todo.txt' },
+        { repoId: idB, path: 'dv-todo-b.txt' },
+      ],
+      (id, status) => progress.push(`${id}:${status}`),
+    );
+    const byId = new Map(report.results.map((r) => [r.id, r]));
+    assert.strictEqual(byId.get('todo')?.status, 'issues');
+    assert.strictEqual(byId.get('todo')?.details, '1 TODO/FIXME item(s): dv-todo.txt:2', 'repo filter must exclude repoB file');
+    assert.strictEqual(byId.get('analyze')?.status, 'ok', 'plain text file must analyze clean');
+    assert.strictEqual(byId.get('rearrange')?.status, 'unavailable');
+    assert.strictEqual(byId.get('dependencies')?.status, 'skipped', 'no package.json in repoA');
+    assert.deepStrictEqual(progress, [
+      'todo:running', 'todo:done',
+      'analyze:running', 'analyze:done',
+      'rearrange:running', 'rearrange:done',
+      'dependencies:running', 'dependencies:done',
+    ]);
+    fs.rmSync(path.join(repoBPath, 'dv-todo-b.txt'));
+    ok('checks.run: todo issues + analyze ok + unavailable + skipped, progress pairs, repo filter');
+
+    // 48. dual-mode partial commit end-to-end: changelist hunk selection + staging line stagePartial
+    const hunkRun = await orchestrator.run({
+      repoIds: [idA],
+      message: 'p3: hunk partial commit',
+      options: {},
+      expectedIncluded: { [idA]: [{ path: 'hunks.txt', selection: { hunkIds: [0] } }] },
+    });
+    assert.strictEqual(hunkRun[0]?.ok, true, `hunk partial commit failed: ${JSON.stringify(hunkRun[0]?.error)}`);
+    const committedHunks = gitA('show', 'HEAD:hunks.txt').toString();
+    assert.ok(committedHunks.includes('line 3 changed') && committedHunks.includes('line 3.5 inserted'), 'selected hunk must land');
+    assert.ok(!committedHunks.includes('line 20 changed'), 'unselected hunk must stay out of the commit');
+    assert.ok(fs.readFileSync(hunksAbs, 'utf8').includes('line 20 changed'), 'worktree keeps unselected hunks');
+    // staging mode: line-level stagePartial then commit the index
+    fs.writeFileSync(linesAbs, 'A\nB\nc\nD\nE\n');
+    await waitFor(() => repoA.state.workingTreeChanges.some((c) => c.uri.fsPath === linesAbs), 'lines.txt re-edited');
+    const stageList = await hunk.list(idA, 'lines.txt', 'worktree');
+    assert.strictEqual(stageList.hunks.length, 1, 'both edits must merge into one hunk');
+    await hunk.stagePartial(idA, 'lines.txt', { hunkIds: [0], lines: { 0: [0] } });
+    await waitFor(() => repoA.state.indexChanges.some((c) => c.uri.fsPath === linesAbs), 'lines.txt partially staged');
+    assert.strictEqual((await repoA.buffer('', 'lines.txt')).toString('utf8'), 'A\nB\nc\nD\ne\n', 'only the selected line staged');
+    assert.strictEqual(fs.readFileSync(linesAbs, 'utf8'), 'A\nB\nc\nD\nE\n', 'worktree untouched by stagePartial');
+    const stagedRun = await orchestrator.run({
+      repoIds: [idA],
+      message: 'p3: staging line partial',
+      options: {},
+      expectedStaged: { [idA]: ['lines.txt'] },
+    });
+    assert.strictEqual(stagedRun[0]?.ok, true, `staging partial commit failed: ${JSON.stringify(stagedRun[0]?.error)}`);
+    assert.strictEqual(gitA('show', 'HEAD:lines.txt').toString(), 'A\nB\nc\nD\ne\n');
+    assert.strictEqual(fs.readFileSync(linesAbs, 'utf8'), 'A\nB\nc\nD\nE\n', 'unselected line remains in worktree');
+    // restore fixture neutrality for the probe files
+    gitA('restore', '--', 'lines.txt');
+    fs.rmSync(dvNewAbs);
+    fs.rmSync(path.join(repoAPath, 'dv-todo.txt'));
+    ok('dual-mode partial commit: changelist hunk selection + staging line stagePartial end-to-end');
+
     console.log(`\n${results.length} integration checks passed`);
+  } catch (err) {
+    console.error('Integration failure:', err instanceof Error ? err.stack : JSON.stringify(err));
+    throw err;
   } finally {
     tracker.dispose();
     status.dispose();
     registry.dispose();
+    kernel.dispose();
   }
 }

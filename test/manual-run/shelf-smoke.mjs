@@ -1,189 +1,145 @@
-// Shelf UI smoke (#26): create double-confirm → revert verified → unshelve → delete, via CDP
-import * as fs from 'node:fs';
-import * as path from 'node:path';
+// Shelf smoke: partial-file shelve, unshelve into a named changelist with remove-after, single-file unshelve.
+// Run via: xvfb-run -a node test/manual-run/launch.mjs shelf-smoke.mjs
+import { check, clickTestId, finish, openView, panel, selectOption, setInput, shot, sleep, workbench } from './lib/cdp.mjs';
 
-const PORT = 9223;
-const ROOT = process.cwd();
-const hunksAbs = path.join(ROOT, 'test/integration/.tmp/repoA/hunks.txt');
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const failures = [];
-const check = (name, cond) => {
-  console.log(`${cond ? 'OK  ' : 'FAIL'} ${name}`);
-  if (!cond) failures.push(name);
-};
-
-async function targets() {
-  return (await (await fetch(`http://127.0.0.1:${PORT}/json/list`)).json());
-}
-function connect(url) {
-  return new Promise((resolve, reject) => {
-    const ws = new WebSocket(url);
-    ws.addEventListener('open', () => resolve(ws));
-    ws.addEventListener('error', reject);
-  });
-}
-class Cdp {
-  constructor(ws) { this.ws = ws; this.id = 0; }
-  send(method, params = {}) {
-    const id = ++this.id;
-    return new Promise((resolve, reject) => {
-      const onMsg = (ev) => {
-        const msg = JSON.parse(ev.data);
-        if (msg.id === id) {
-          this.ws.removeEventListener('message', onMsg);
-          if (msg.error) reject(new Error(`${method}: ${JSON.stringify(msg.error.message)}`));
-          else resolve(msg.result);
-        }
-      };
-      this.ws.addEventListener('message', onMsg);
-      this.ws.send(JSON.stringify({ id, method, params }));
-    });
-  }
-  async eval(expression) {
-    const res = await this.send('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true });
-    if (res.exceptionDetails) throw new Error('eval: ' + JSON.stringify(res.exceptionDetails).slice(0, 250));
-    return res.result.value;
-  }
-  async key(key, code, keyCode) {
-    for (const type of ['rawKeyDown', 'keyUp']) {
-      await this.send('Input.dispatchKeyEvent', { type, key, code, windowsVirtualKeyCode: keyCode, nativeVirtualKeyCode: keyCode });
-    }
-  }
-}
-async function waitFor(fn, label, timeoutMs = 20000) {
-  const start = Date.now();
-  for (;;) {
-    const v = await fn();
-    if (v) return v;
-    if (Date.now() - start > timeoutMs) throw new Error(`timeout: ${label}`);
+const wb = await workbench();
+await openView(wb, 'Commit');
+const { cdp, ev } = await panel('commit-panel');
+async function waitFor(fn, ms = 15000) {
+  const end = Date.now() + ms;
+  while (Date.now() < end) {
+    if (await fn()) return true;
     await sleep(300);
   }
+  return false;
 }
-async function shot(cdp, name) {
-  const { data } = await cdp.send('Page.captureScreenshot', { format: 'png' });
-  fs.writeFileSync(`test/manual-run/${name}.png`, Buffer.from(data, 'base64'));
-  console.log('shot ->', name + '.png');
-}
-
-const workbench = (await targets()).find((t) => t.type === 'page' && t.url.startsWith('vscode-file://'));
-const wb = new Cdp(await connect(workbench.webSocketDebuggerUrl));
-
-// ensurePanel: reload restores the view OPEN; only click when the sidebar shows another view
-const ensurePanel = async () => {
-  const open = await wb.eval(`(document.querySelector('.sidebar .composite.title')?.textContent ?? '').includes('Git Batch Commit')`);
-  if (!open) {
-    await wb.eval(`(() => {
-      const btn = Array.from(document.querySelectorAll('.activitybar .action-item a'))
-        .find(a => (a.getAttribute('aria-label') || '').includes('Git Batch Commit'));
-      if (btn) btn.click();
-    })()`);
-  }
-  await sleep(3000);
-};
-await ensurePanel();
-
-const wt = await waitFor(async () => (await targets()).find((t) => t.type === 'iframe' && t.url.startsWith('vscode-webview://')), 'webview target');
-const wv = new Cdp(await connect(wt.webSocketDebuggerUrl));
-const ev = (body) => wv.eval(`(() => { const doc = document.querySelector('iframe').contentDocument; if (!doc || !doc.body) return 'NO INNER DOC'; return ((${body})(doc)); })()`);
-const clickBtn = (scope, label) => ev(`(doc) => {
-  const root = ${scope ? `doc.querySelector('${scope}')` : 'doc'};
-  if (!root) return false;
-  const btn = Array.from(root.querySelectorAll('button')).find(b => b.textContent.trim() === '${label}');
-  if (!btn || btn.disabled) return false;
-  btn.click();
-  return true;
-}`);
-const clickBtnPrefix = (scope, prefix) => ev(`(doc) => {
-  const root = ${scope ? `doc.querySelector('${scope}')` : 'doc'};
-  if (!root) return false;
-  const btn = Array.from(root.querySelectorAll('button')).find(b => b.textContent.trim().startsWith('${prefix}'));
-  if (!btn || btn.disabled) return false;
-  btn.click();
-  return true;
-}`);
-const setInput = (sel, value) => ev(`(doc) => {
-  const input = doc.querySelector('${sel}');
-  if (!input) return false;
-  const set = Object.getOwnPropertyDescriptor(doc.defaultView.HTMLInputElement.prototype, 'value').set;
-  set.call(input, ${JSON.stringify(value)});
-  input.dispatchEvent(new doc.defaultView.Event('input', { bubbles: true }));
+const rightClick = (sel) => ev(`(doc) => {
+  const el = doc.querySelector('${sel}');
+  if (!el) return false;
+  const r = el.getBoundingClientRect();
+  el.dispatchEvent(new doc.defaultView.MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: r.x + 30, clientY: r.y + 5 }));
   return true;
 }`);
 
-await waitFor(() => ev(`(doc) => doc.querySelectorAll('.gbc-reporow').length >= 1`), 'panel repos rendered');
-const headBefore = fs.readFileSync(hunksAbs, 'utf8');
-check('fixture hunks.txt has worktree changes', headBefore.includes('line 3 changed'));
-
-// open Shelf overlay from repoA toolbar (toggle: skip click if already open)
-const alreadyOpen = await ev(`(doc) => !!doc.querySelector('.gbc-shelfoverlay')`);
-if (!alreadyOpen) {
-  await ev(`(doc) => {
-    const row = Array.from(doc.querySelectorAll('.gbc-reporow')).find(r => r.textContent.includes('repoA'));
-    const btn = row && Array.from(row.querySelectorAll('button')).find(b => b.textContent.trim() === 'Shelf');
-    if (btn) btn.click();
-  }`);
-}
-await waitFor(() => ev(`(doc) => !!doc.querySelector('.gbc-shelfoverlay')`), 'shelf overlay opens');
-const candidates = await ev(`(doc) => Array.from(doc.querySelectorAll('.gbc-shelffiles .gbc-shelffile')).map(l => l.textContent.trim())`);
-check('candidates include tracked hunks.txt', candidates.some((c) => c.includes('hunks.txt')));
-check('untracked files excluded from candidates', !candidates.some((c) => c.includes('big.txt') || c.includes('binary.bin')));
-
-// keep only hunks.txt selected (repoA also has a submodule typechange candidate)
-await ev(`(doc) => {
-  for (const label of doc.querySelectorAll('.gbc-shelffiles .gbc-shelffile')) {
-    const box = label.querySelector('input[type=checkbox]');
-    if (box && box.checked && !label.textContent.includes('hunks.txt')) box.click();
-  }
-}`);
-await sleep(200);
-
-// empty name must be rejected client-side (clear any leftover name/confirm from prior runs)
-await setInput('.gbc-shelfname', '');
-await clickBtn('.gbc-shelfoverlay .gbc-confirm', '取消');
-await sleep(200);
-await clickBtnPrefix('.gbc-shelfcreate', '搁置选中');
+// a named target changelist for the unshelve dialog
+await rightClick('[data-testid="changelist-default"]');
 await sleep(400);
-const nameErr = await ev(`(doc) => doc.querySelector('.gbc-shelfoverlay')?.innerText ?? ''`);
-check('empty name rejected', nameErr.includes('请输入 Shelf 名称'));
+await clickTestId(ev, 'menu-new');
+await waitFor(() => ev(`(doc) => !!doc.querySelector('[data-testid="dialog-newchangelist"]')`));
+await setInput(ev, '[data-testid="changelist-name"]', 'Shelf Target');
+await clickTestId(ev, 'dialog-ok');
+check('target changelist created', await waitFor(() => ev(`(doc) => Array.from(doc.querySelectorAll('[data-testid^="changelist-"]')).some(h => h.innerText.includes('Shelf Target'))`)));
 
-await setInput('.gbc-shelfname', 'smoke shelf');
+// highlight two tracked files from the first repo that has two, shelve only the first
+const pair = await ev(`(doc) => {
+  const rows = Array.from(doc.querySelectorAll('[data-testid="file-row"]'))
+    .filter(r => r.getAttribute('data-conflicted') === 'false' && r.getAttribute('data-status') !== '?');
+  const byRepo = {};
+  for (const r of rows) (byRepo[r.getAttribute('data-repo')] ??= []).push(r);
+  const repoId = Object.keys(byRepo).find(id => byRepo[id].length >= 2);
+  return (byRepo[repoId] ?? []).slice(0, 2).map(r => r.getAttribute('data-path'));
+}`);
+check('two candidate files found', pair.length === 2);
+await ev(`(doc) => doc.querySelector('[data-testid="file-row"][data-path="${pair[0]}"]')?.click()`);
 await sleep(200);
+await ev(`(doc) => {
+  const row = doc.querySelector('[data-testid="file-row"][data-path="${pair[1]}"]');
+  row?.dispatchEvent(new doc.defaultView.MouseEvent('click', { bubbles: true, cancelable: true, shiftKey: true }));
+}`);
+await sleep(300);
+await clickTestId(ev, 'tool-shelve');
+check('shelve dialog lists both files', await waitFor(() => ev(`(doc) => doc.querySelectorAll('[data-testid="shelve-files"] input[type=checkbox]').length === 2`)));
+await setInput(ev, '[data-testid="shelve-name"]', 'smoke shelf');
+await ev(`(doc) => doc.querySelectorAll('[data-testid="shelve-files"] input[type=checkbox]')[1]?.click()`);
+await sleep(300);
 await shot(wb, 's1-shelf-overlay');
-await clickBtnPrefix('.gbc-shelfcreate', '搁置选中');
-await waitFor(() => ev(`(doc) => !!doc.querySelector('.gbc-shelfoverlay .gbc-confirm')`), 'create double-confirm shown');
-const confirmText = await ev(`(doc) => doc.querySelector('.gbc-shelfoverlay .gbc-confirm')?.innerText ?? ''`);
-check('confirm explains revert to HEAD', confirmText.includes('恢复到 HEAD'));
-await shot(wb, 's2-shelf-confirm');
-await clickBtn('.gbc-shelfoverlay .gbc-confirm', '确认搁置');
-
-await waitFor(() => ev(`(doc) => doc.querySelectorAll('.gbc-shelfitem').length === 1`), 'shelf entry listed');
-await waitFor(() => !fs.readFileSync(hunksAbs, 'utf8').includes('line 3 changed'), 'worktree reverted to HEAD');
-check('shelve reverted hunks.txt on disk', !fs.readFileSync(hunksAbs, 'utf8').includes('line 3 changed'));
-const entryText = await ev(`(doc) => doc.querySelector('.gbc-shelfitem')?.innerText ?? ''`);
-check('entry shows name/branch/file count', entryText.includes('smoke shelf') && entryText.includes('main') && entryText.includes('1 文件'));
-await waitFor(() => ev(`(doc) => !Array.from(doc.querySelectorAll('.gbc-filerow')).some(r => r.textContent.includes('hunks.txt'))`), 'hunks.txt gone from change tree');
+await clickTestId(ev, 'dialog-ok');
+await sleep(1500);
+await clickTestId(ev, 'tab-shelf');
+await selectOption(ev, '[data-testid="shelf-repo"]', 'repoA');
+check('shelf entry created', await waitFor(() => ev(`(doc) => !!doc.querySelector('[data-testid="shelf-entry"]')`)));
+await ev(`(doc) => doc.querySelector('[data-testid="shelf-entry"] .gbc-chevron')?.click()`);
+await sleep(400);
+check('only the selected file was shelved', await ev(`(doc) => {
+  const files = Array.from(doc.querySelectorAll('[data-testid="shelf-file"]')).map(f => f.getAttribute('data-path'));
+  return files.length === 1 && files[0] === ${JSON.stringify(pair[0])};
+}`));
 await shot(wb, 's3-shelf-entry');
 
-// unshelve (full, keep entry)
-await clickBtn('.gbc-shelfitem', '恢复…');
-await waitFor(() => ev(`(doc) => !!doc.querySelector('.gbc-shelfunshelve')`), 'unshelve picker expands');
+// unshelve into "Shelf Target" with remove-after
+await ev(`(doc) => {
+  const row = doc.querySelector('[data-testid="shelf-entry"] .gbc-shelfrow');
+  row?.dispatchEvent(new doc.defaultView.MouseEvent('dblclick', { bubbles: true, cancelable: true }));
+}`);
+check('unshelve dialog opens', await waitFor(() => ev(`(doc) => !!doc.querySelector('[data-testid="dialog-unshelve"]')`)));
+const targeted = await ev(`(doc) => {
+  const sel = doc.querySelector('[data-testid="unshelve-target"]');
+  const opt = Array.from(sel?.options ?? []).find(o => o.textContent === 'Shelf Target');
+  if (!sel || !opt) return false;
+  const set = Object.getOwnPropertyDescriptor(doc.defaultView.HTMLSelectElement.prototype, 'value').set;
+  set.call(sel, opt.value);
+  sel.dispatchEvent(new doc.defaultView.Event('change', { bubbles: true }));
+  return true;
+}`);
+check('unshelve target selectable', targeted);
+await ev(`(doc) => doc.querySelector('[data-testid="unshelve-removeafter"]')?.click()`);
+await sleep(300);
 await shot(wb, 's4-shelf-unshelve');
-await clickBtn('.gbc-shelfunshelve', '恢复到当前分支');
-await waitFor(() => fs.readFileSync(hunksAbs, 'utf8').includes('line 3 changed'), 'unshelve restored worktree');
-check('unshelve restored hunks.txt changes', fs.readFileSync(hunksAbs, 'utf8') === headBefore);
-check('entry kept without removeAfter', await ev(`(doc) => doc.querySelectorAll('.gbc-shelfitem').length === 1`));
+await clickTestId(ev, 'dialog-ok');
+check('shelf removed after unshelve', await waitFor(async () => !(await ev(`(doc) => !!doc.querySelector('[data-testid="shelf-entry"]')`))));
+await clickTestId(ev, 'tab-commit');
+check('unshelved file back in the tree', await waitFor(() => ev(`(doc) => !!doc.querySelector('[data-testid="file-row"][data-path="${pair[0]}"]')`)));
 
-// delete with double confirm
-await clickBtn('.gbc-shelfitem', '删除');
-await waitFor(() => ev(`(doc) => !!doc.querySelector('.gbc-shelfitem .gbc-confirm')`), 'delete double-confirm shown');
-await clickBtn('.gbc-shelfitem .gbc-confirm', '确认删除');
-await waitFor(() => ev(`(doc) => doc.querySelectorAll('.gbc-shelfitem').length === 0`), 'entry deleted');
-check('delete removes entry', await ev(`(doc) => (doc.querySelector('.gbc-shelflist')?.innerText ?? '').includes('没有 Shelf')`));
+// single-file unshelve via the shelf-file context menu
+await ev(`(doc) => doc.querySelector('[data-testid="file-row"][data-path="${pair[0]}"]')?.click()`);
+await sleep(200);
+await clickTestId(ev, 'tool-shelve');
+await waitFor(() => ev(`(doc) => !!doc.querySelector('[data-testid="dialog-shelve"]')`));
+await setInput(ev, '[data-testid="shelve-name"]', 'smoke shelf 2');
+await clickTestId(ev, 'dialog-ok');
+await sleep(1500);
+await clickTestId(ev, 'tab-shelf');
+await selectOption(ev, '[data-testid="shelf-repo"]', 'repoA');
+await waitFor(() => ev(`(doc) => !!doc.querySelector('[data-testid="shelf-entry"]')`));
+await ev(`(doc) => doc.querySelector('[data-testid="shelf-entry"] .gbc-chevron')?.click()`);
+await sleep(400);
+await rightClick('[data-testid="shelf-file"]');
+await sleep(400);
+check('shelf file menu offers Unshelve File', await ev(`(doc) => !!doc.querySelector('[data-testid="menu-unshelveFile"]')`));
+await clickTestId(ev, 'menu-unshelveFile');
+await sleep(2000);
+await clickTestId(ev, 'tab-commit');
+check('single-file unshelve restored the file', await waitFor(() => ev(`(doc) => !!doc.querySelector('[data-testid="file-row"][data-path="${pair[0]}"]')`)));
 
-// Escape closes overlay
-await wv.key('Escape', 'Escape', 27);
-await sleep(600);
-check('Escape closes shelf overlay', !(await ev(`(doc) => !!doc.querySelector('.gbc-shelfoverlay')`)));
+// cleanup: remove leftover shelf entries and the target changelist
+await clickTestId(ev, 'tab-shelf');
+await selectOption(ev, '[data-testid="shelf-repo"]', 'repoA');
+await sleep(800);
+for (let i = 0; i < 3; i++) {
+  const any = await ev(`(doc) => !!doc.querySelector('[data-testid="shelf-entry"] .gbc-shelfrow')`);
+  if (!any) break;
+  await rightClick('[data-testid="shelf-entry"] .gbc-shelfrow');
+  await sleep(400);
+  await clickTestId(ev, 'menu-delete');
+  await waitFor(() => ev(`(doc) => !!doc.querySelector('[data-testid="dialog-deleteshelf"]')`));
+  await clickTestId(ev, 'dialog-ok');
+  await sleep(1000);
+}
+await clickTestId(ev, 'tab-commit');
+await sleep(500);
+await ev(`(doc) => {
+  const h = Array.from(doc.querySelectorAll('[data-testid^="changelist-"]')).find(x => x.innerText.includes('Shelf Target'));
+  if (!h) return false;
+  const r = h.getBoundingClientRect();
+  h.dispatchEvent(new doc.defaultView.MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: r.x + 30, clientY: r.y + 5 }));
+  return true;
+}`);
+await sleep(400);
+await clickTestId(ev, 'menu-delete');
+await waitFor(() => ev(`(doc) => !!doc.querySelector('[data-testid="dialog-deletechangelist"]')`));
+await clickTestId(ev, 'dialog-ok');
+check('target changelist cleaned up', await waitFor(async () => !(await ev(`(doc) => Array.from(doc.querySelectorAll('[data-testid^="changelist-"]')).some(h => h.innerText.includes('Shelf Target'))`))));
 
-console.log(failures.length === 0 ? '\nshelf smoke: all checks passed' : `\nshelf smoke FAILED: ${failures.join('; ')}`);
-process.exit(failures.length === 0 ? 0 : 1);
+cdp.ws.close();
+wb.ws.close();
+finish('SHELF-SMOKE');

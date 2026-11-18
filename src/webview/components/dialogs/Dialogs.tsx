@@ -1,0 +1,816 @@
+import type { ReactNode } from 'react';
+import type { ChangelistFileRef } from '../../../protocol/models';
+import { STRINGS } from '../../strings/en';
+import { usePanelStore } from '../../state/StoreContext';
+import type { Dialog } from '../../state/types';
+import { Icon } from '../../theme/icons/Icon';
+import { Checkbox } from '../primitives';
+
+const D = STRINGS.dialogs;
+const A = STRINGS.actions;
+
+function Shell({
+  title,
+  testId,
+  children,
+  footer,
+}: {
+  title: string;
+  testId: string;
+  children: ReactNode;
+  footer: ReactNode;
+}) {
+  const closeDialog = usePanelStore((s) => s.closeDialog);
+  const dialogBusy = usePanelStore((s) => s.dialogBusy);
+  const dialogError = usePanelStore((s) => s.dialogError);
+  return (
+    <div
+      className="gbc-dialog-overlay"
+      onMouseDown={(e) => {
+        if (e.target === e.currentTarget && !dialogBusy) {
+          closeDialog();
+        }
+      }}
+    >
+      <div className="gbc-dialog" role="dialog" aria-modal="true" aria-label={title} data-testid={testId}>
+        <div className="gbc-dialog-head">
+          <span className="gbc-dialog-title">{title}</span>
+          <button type="button" className="gbc-banner-close" aria-label={A.close} data-testid="dialog-close" onClick={closeDialog}>
+            <Icon name="close" size={12} />
+          </button>
+        </div>
+        <div className="gbc-dialog-body">{children}</div>
+        {dialogError && (
+          <div className="gbc-dialog-error" role="alert" data-testid="dialog-error">
+            {dialogError}
+          </div>
+        )}
+        <div className="gbc-dialog-foot">{footer}</div>
+      </div>
+    </div>
+  );
+}
+
+function Btn({
+  label,
+  onClick,
+  primary,
+  danger,
+  disabled,
+  testId,
+}: {
+  label: string;
+  onClick: () => void;
+  primary?: boolean;
+  danger?: boolean;
+  disabled?: boolean;
+  testId?: string;
+}) {
+  const busy = usePanelStore((s) => s.dialogBusy);
+  return (
+    <button
+      type="button"
+      className={`gbc-btn${primary ? ' gbc-btn-primary' : ''}${danger ? ' gbc-btn-danger' : ''}`}
+      disabled={disabled || busy}
+      data-testid={testId}
+      onClick={onClick}
+    >
+      {label}
+    </button>
+  );
+}
+
+function FileList({ refs }: { refs: ChangelistFileRef[] }) {
+  const repos = usePanelStore((s) => s.repos);
+  const multi = new Set(refs.map((r) => r.repoId)).size > 1;
+  return (
+    <ul className="gbc-filelist" data-testid="dialog-filelist">
+      {refs.map((r) => (
+        <li key={`${r.repoId}:${r.path}`} title={r.path}>
+          {multi ? `${repos[r.repoId]?.repo.name ?? r.repoId}: ` : ''}
+          {r.path}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function ListSelect({ value, onChange, testId }: { value: string; onChange: (id: string) => void; testId: string }) {
+  const lists = usePanelStore((s) => s.changelists?.lists ?? []);
+  return (
+    <select className="gbc-input gbc-select" data-testid={testId} value={value} onChange={(e) => onChange(e.target.value)}>
+      {lists.map((l) => (
+        <option key={l.id} value={l.id}>
+          {l.name}
+        </option>
+      ))}
+    </select>
+  );
+}
+
+function RollbackDialog({ dialog }: { dialog: Extract<Dialog, { kind: 'rollback' }> }) {
+  const rollbackFiles = usePanelStore((s) => s.rollbackFiles);
+  const closeDialog = usePanelStore((s) => s.closeDialog);
+  return (
+    <Shell
+      title={D.rollbackTitle}
+      testId="dialog-rollback"
+      footer={
+        <>
+          <Btn label={A.cancel} onClick={closeDialog} />
+          <Btn label={A.rollback} primary danger testId="dialog-ok" onClick={() => void rollbackFiles(dialog.refs)} />
+        </>
+      }
+    >
+      <p>{D.rollbackBody}</p>
+      <FileList refs={dialog.refs} />
+    </Shell>
+  );
+}
+
+function DeleteFilesDialog({ dialog }: { dialog: Extract<Dialog, { kind: 'deleteFiles' }> }) {
+  const deleteFiles = usePanelStore((s) => s.deleteFiles);
+  const closeDialog = usePanelStore((s) => s.closeDialog);
+  return (
+    <Shell
+      title={D.deleteTitle}
+      testId="dialog-delete"
+      footer={
+        <>
+          <Btn label={A.cancel} onClick={closeDialog} />
+          <Btn label={A.delete} primary danger testId="dialog-ok" onClick={() => void deleteFiles(dialog.refs)} />
+        </>
+      }
+    >
+      <p>{D.deleteBody}</p>
+      <FileList refs={dialog.refs} />
+    </Shell>
+  );
+}
+
+function ShelveDialog({ dialog }: { dialog: Extract<Dialog, { kind: 'shelve' }> }) {
+  const patchDialog = usePanelStore((s) => s.patchDialog);
+  const confirmShelve = usePanelStore((s) => s.confirmShelve);
+  const closeDialog = usePanelStore((s) => s.closeDialog);
+  return (
+    <Shell
+      title={D.shelveTitle}
+      testId="dialog-shelve"
+      footer={
+        <>
+          <Btn label={A.cancel} onClick={closeDialog} />
+          <Btn label={A.shelveChanges} primary testId="dialog-ok" onClick={() => void confirmShelve()} />
+        </>
+      }
+    >
+      <label className="gbc-field">
+        <span className="gbc-option-label">{D.shelfName}</span>
+        <input
+          type="text"
+          className="gbc-input"
+          data-testid="shelve-name"
+          value={dialog.name}
+          onChange={(e) => patchDialog({ name: e.target.value })}
+        />
+      </label>
+      <div className="gbc-option-label">{D.shelveFiles}</div>
+      <ul className="gbc-filelist gbc-checklist" data-testid="shelve-files">
+        {dialog.refs.map((r) => (
+          <li key={r.path}>
+            <label className="gbc-checklist-item">
+              <Checkbox
+                checked={dialog.selected[r.path] ?? true}
+                onChange={(target) => patchDialog({ selected: { ...dialog.selected, [r.path]: target } })}
+                label={r.path}
+              />
+              <span title={r.path}>{r.path}</span>
+            </label>
+          </li>
+        ))}
+      </ul>
+    </Shell>
+  );
+}
+
+function UnshelveDialog({ dialog }: { dialog: Extract<Dialog, { kind: 'unshelve' }> }) {
+  const patchDialog = usePanelStore((s) => s.patchDialog);
+  const confirmUnshelve = usePanelStore((s) => s.confirmUnshelve);
+  const closeDialog = usePanelStore((s) => s.closeDialog);
+  const mode = usePanelStore((s) => s.mode);
+  return (
+    <Shell
+      title={D.unshelveTitle}
+      testId="dialog-unshelve"
+      footer={
+        <>
+          <Btn label={A.cancel} onClick={closeDialog} />
+          <Btn label={A.unshelveChanges} primary testId="dialog-ok" onClick={() => void confirmUnshelve()} />
+        </>
+      }
+    >
+      {mode === 'changelist' && (
+        <label className="gbc-field">
+          <span className="gbc-option-label">{D.unshelveTo}</span>
+          <ListSelect value={dialog.targetListId} onChange={(id) => patchDialog({ targetListId: id })} testId="unshelve-target" />
+        </label>
+      )}
+      <div className="gbc-option-label">{D.unshelveFiles}</div>
+      <ul className="gbc-filelist gbc-checklist" data-testid="unshelve-files">
+        {dialog.files.map((path) => (
+          <li key={path}>
+            <label className="gbc-checklist-item">
+              <Checkbox
+                checked={dialog.selected[path] ?? true}
+                onChange={(target) => patchDialog({ selected: { ...dialog.selected, [path]: target } })}
+                label={path}
+              />
+              <span title={path}>{path}</span>
+            </label>
+          </li>
+        ))}
+      </ul>
+      <label className="gbc-option-row gbc-option-check">
+        <Checkbox
+          checked={dialog.removeAfter}
+          onChange={(target) => patchDialog({ removeAfter: target })}
+          label={D.removeAfter}
+          testId="unshelve-removeafter"
+        />
+        <span className="gbc-option-label">{D.removeAfter}</span>
+      </label>
+    </Shell>
+  );
+}
+
+function StashCreateDialog({ dialog }: { dialog: Extract<Dialog, { kind: 'stashCreate' }> }) {
+  const patchDialog = usePanelStore((s) => s.patchDialog);
+  const confirmStashCreate = usePanelStore((s) => s.confirmStashCreate);
+  const closeDialog = usePanelStore((s) => s.closeDialog);
+  return (
+    <Shell
+      title={D.stashTitle}
+      testId="dialog-stash"
+      footer={
+        <>
+          <Btn label={A.cancel} onClick={closeDialog} />
+          <Btn label={A.createStash} primary testId="dialog-ok" onClick={() => void confirmStashCreate()} />
+        </>
+      }
+    >
+      <label className="gbc-field">
+        <span className="gbc-option-label">{D.stashMessage}</span>
+        <input
+          type="text"
+          className="gbc-input"
+          data-testid="stash-message"
+          value={dialog.message}
+          onChange={(e) => patchDialog({ message: e.target.value })}
+        />
+      </label>
+      <label className="gbc-option-row gbc-option-check">
+        <Checkbox
+          checked={dialog.includeUntracked}
+          onChange={(target) => patchDialog({ includeUntracked: target })}
+          label={D.stashIncludeUntracked}
+          testId="stash-untracked"
+        />
+        <span className="gbc-option-label">{D.stashIncludeUntracked}</span>
+      </label>
+      <label className="gbc-option-row gbc-option-check">
+        <Checkbox
+          checked={dialog.stagedOnly}
+          onChange={(target) => patchDialog({ stagedOnly: target })}
+          label={D.stashStagedOnly}
+          testId="stash-stagedonly"
+        />
+        <span className="gbc-option-label">{D.stashStagedOnly}</span>
+      </label>
+    </Shell>
+  );
+}
+
+function MoveChangelistDialog({ dialog }: { dialog: Extract<Dialog, { kind: 'moveChangelist' }> }) {
+  const patchDialog = usePanelStore((s) => s.patchDialog);
+  const moveFiles = usePanelStore((s) => s.moveFiles);
+  const closeDialog = usePanelStore((s) => s.closeDialog);
+  return (
+    <Shell
+      title={D.moveTitle}
+      testId="dialog-move"
+      footer={
+        <>
+          <Btn label={A.cancel} onClick={closeDialog} />
+          <Btn label={A.move} primary testId="dialog-ok" onClick={() => void moveFiles(dialog.refs, dialog.targetId)} />
+        </>
+      }
+    >
+      <label className="gbc-field">
+        <span className="gbc-option-label">{D.moveTarget}</span>
+        <ListSelect value={dialog.targetId} onChange={(id) => patchDialog({ targetId: id })} testId="move-target" />
+      </label>
+      <FileList refs={dialog.refs} />
+    </Shell>
+  );
+}
+
+function NewChangelistDialog({ dialog }: { dialog: Extract<Dialog, { kind: 'newChangelist' }> }) {
+  const patchDialog = usePanelStore((s) => s.patchDialog);
+  const createChangelist = usePanelStore((s) => s.createChangelist);
+  const closeDialog = usePanelStore((s) => s.closeDialog);
+  return (
+    <Shell
+      title={D.newChangelistTitle}
+      testId="dialog-newchangelist"
+      footer={
+        <>
+          <Btn label={A.cancel} onClick={closeDialog} />
+          <Btn
+            label={A.create}
+            primary
+            testId="dialog-ok"
+            disabled={!dialog.name.trim()}
+            onClick={() => void createChangelist(dialog.name.trim(), dialog.comment)}
+          />
+        </>
+      }
+    >
+      <label className="gbc-field">
+        <span className="gbc-option-label">{D.listName}</span>
+        <input
+          type="text"
+          className="gbc-input"
+          data-testid="changelist-name"
+          value={dialog.name}
+          autoFocus
+          onChange={(e) => patchDialog({ name: e.target.value })}
+        />
+      </label>
+      <label className="gbc-field">
+        <span className="gbc-option-label">{D.listComment}</span>
+        <input
+          type="text"
+          className="gbc-input"
+          data-testid="changelist-comment"
+          value={dialog.comment}
+          onChange={(e) => patchDialog({ comment: e.target.value })}
+        />
+      </label>
+    </Shell>
+  );
+}
+
+function RenameChangelistDialog({ dialog }: { dialog: Extract<Dialog, { kind: 'renameChangelist' }> }) {
+  const patchDialog = usePanelStore((s) => s.patchDialog);
+  const renameChangelist = usePanelStore((s) => s.renameChangelist);
+  const closeDialog = usePanelStore((s) => s.closeDialog);
+  return (
+    <Shell
+      title={D.renameChangelistTitle}
+      testId="dialog-renamechangelist"
+      footer={
+        <>
+          <Btn label={A.cancel} onClick={closeDialog} />
+          <Btn
+            label={A.rename}
+            primary
+            testId="dialog-ok"
+            disabled={!dialog.name.trim()}
+            onClick={() => void renameChangelist(dialog.id, dialog.name.trim())}
+          />
+        </>
+      }
+    >
+      <label className="gbc-field">
+        <span className="gbc-option-label">{D.listName}</span>
+        <input
+          type="text"
+          className="gbc-input"
+          data-testid="changelist-name"
+          value={dialog.name}
+          autoFocus
+          onChange={(e) => patchDialog({ name: e.target.value })}
+        />
+      </label>
+    </Shell>
+  );
+}
+
+function EditCommentDialog({ dialog }: { dialog: Extract<Dialog, { kind: 'editComment' }> }) {
+  const patchDialog = usePanelStore((s) => s.patchDialog);
+  const setChangelistComment = usePanelStore((s) => s.setChangelistComment);
+  const closeDialog = usePanelStore((s) => s.closeDialog);
+  return (
+    <Shell
+      title={D.editCommentTitle}
+      testId="dialog-editcomment"
+      footer={
+        <>
+          <Btn label={A.cancel} onClick={closeDialog} />
+          <Btn label={A.save} primary testId="dialog-ok" onClick={() => void setChangelistComment(dialog.id, dialog.comment)} />
+        </>
+      }
+    >
+      <textarea
+        className="gbc-input gbc-comment-input"
+        data-testid="changelist-comment"
+        value={dialog.comment}
+        autoFocus
+        onChange={(e) => patchDialog({ comment: e.target.value })}
+      />
+    </Shell>
+  );
+}
+
+function DeleteChangelistDialog({ dialog }: { dialog: Extract<Dialog, { kind: 'deleteChangelist' }> }) {
+  const lists = usePanelStore((s) => s.changelists?.lists ?? []);
+  const removeChangelist = usePanelStore((s) => s.removeChangelist);
+  const closeDialog = usePanelStore((s) => s.closeDialog);
+  const list = lists.find((l) => l.id === dialog.id);
+  return (
+    <Shell
+      title={D.deleteChangelistTitle}
+      testId="dialog-deletechangelist"
+      footer={
+        <>
+          <Btn label={A.cancel} onClick={closeDialog} />
+          <Btn label={A.delete} primary danger testId="dialog-ok" onClick={() => void removeChangelist(dialog.id)} />
+        </>
+      }
+    >
+      <p>{D.deleteChangelistBody(list?.name ?? dialog.id, list?.files.length ?? 0)}</p>
+    </Shell>
+  );
+}
+
+function ModeSwitchDialog({ dialog }: { dialog: Extract<Dialog, { kind: 'modeSwitch' }> }) {
+  const confirmModeSwitch = usePanelStore((s) => s.confirmModeSwitch);
+  const closeDialog = usePanelStore((s) => s.closeDialog);
+  const enabling = dialog.mode === 'staging';
+  return (
+    <Shell
+      title={enabling ? D.modeEnableTitle : D.modeDisableTitle}
+      testId="dialog-modeswitch"
+      footer={
+        <>
+          <Btn label={A.cancel} onClick={closeDialog} />
+          <Btn
+            label={enabling ? A.enable : A.disable}
+            primary
+            testId="dialog-ok"
+            onClick={() => void confirmModeSwitch()}
+          />
+        </>
+      }
+    >
+      <p>{enabling ? D.modeEnableBody(dialog.preview) : D.modeDisableBody(dialog.preview)}</p>
+    </Shell>
+  );
+}
+
+function ChangelistConflictDialog({ dialog }: { dialog: Extract<Dialog, { kind: 'changelistConflict' }> }) {
+  const moveFiles = usePanelStore((s) => s.moveFiles);
+  const closeDialog = usePanelStore((s) => s.closeDialog);
+  return (
+    <Shell
+      title={D.conflictTitle}
+      testId="dialog-changelistconflict"
+      footer={
+        <>
+          <Btn label={A.cancel} onClick={closeDialog} />
+          <Btn label={A.move} primary testId="dialog-ok" onClick={() => void moveFiles(dialog.refs, dialog.targetId, true)} />
+        </>
+      }
+    >
+      <p>{D.conflictBody(dialog.conflict.path, dialog.conflict.ownerListName)}</p>
+    </Shell>
+  );
+}
+
+function PushDialog({ dialog }: { dialog: Extract<Dialog, { kind: 'push' }> }) {
+  const repos = usePanelStore((s) => s.repos);
+  const confirmPush = usePanelStore((s) => s.confirmPush);
+  const closeDialog = usePanelStore((s) => s.closeDialog);
+  return (
+    <Shell
+      title={D.pushTitle}
+      testId="dialog-push"
+      footer={
+        <>
+          <Btn label={A.cancel} onClick={closeDialog} />
+          <Btn label={A.push} primary testId="dialog-ok" onClick={() => void confirmPush()} />
+        </>
+      }
+    >
+      <p>{D.pushBody}</p>
+      <ul className="gbc-pushlist" data-testid="push-repos">
+        {dialog.repoIds.map((id) => {
+          const status = repos[id];
+          if (!status) {
+            return null;
+          }
+          const { branch } = status;
+          return (
+            <li key={id} data-repo={id}>
+              <span className="gbc-repo-name">{status.repo.name}</span>
+              <span className="gbc-pushref">
+                {branch.name ?? STRINGS.branch.detached(branch.oid?.slice(0, 7) ?? '')}
+                {branch.upstream ? ` → ${branch.upstream}` : ''}
+              </span>
+              {branch.ahead !== undefined && branch.ahead > 0 && <span className="gbc-ahead">↑{branch.ahead}</span>}
+              {!branch.upstream && <span className="gbc-push-note">{D.pushNoUpstream}</span>}
+            </li>
+          );
+        })}
+      </ul>
+    </Shell>
+  );
+}
+
+function AmendPushedDialog() {
+  const confirmAmendPushed = usePanelStore((s) => s.confirmAmendPushed);
+  const closeDialog = usePanelStore((s) => s.closeDialog);
+  return (
+    <Shell
+      title={D.amendPushedTitle}
+      testId="dialog-amendpushed"
+      footer={
+        <>
+          <Btn label={A.cancel} onClick={closeDialog} />
+          <Btn label={A.amendAnyway} primary danger testId="dialog-ok" onClick={() => void confirmAmendPushed()} />
+        </>
+      }
+    >
+      <p>{D.amendPushedBody}</p>
+    </Shell>
+  );
+}
+
+const CHECK_STATUS_LABEL = {
+  ok: STRINGS.checks.statusOk,
+  issues: STRINGS.checks.statusIssues,
+  unavailable: STRINGS.checks.statusUnavailable,
+  skipped: STRINGS.checks.statusSkipped,
+} as const;
+
+function ChecksReportDialog({ dialog }: { dialog: Extract<Dialog, { kind: 'checksReport' }> }) {
+  const commit = usePanelStore((s) => s.commit);
+  const requestPush = usePanelStore((s) => s.requestPush);
+  const closeDialog = usePanelStore((s) => s.closeDialog);
+  return (
+    <Shell
+      title={D.checksReportTitle}
+      testId="dialog-checksreport"
+      footer={
+        dialog.postCommit ? (
+          <>
+            <Btn label={STRINGS.checks.review} testId="dialog-review" onClick={closeDialog} />
+            {dialog.pushAfter && (
+              <Btn
+                label={A.push}
+                primary
+                testId="dialog-ok"
+                onClick={() => {
+                  closeDialog();
+                  requestPush(dialog.repoIds ?? []);
+                }}
+              />
+            )}
+          </>
+        ) : (
+          <>
+            <Btn label={STRINGS.checks.review} onClick={closeDialog} />
+            <Btn
+              label={STRINGS.checks.commitAnyway}
+              primary
+              testId="dialog-ok"
+              onClick={() => {
+                closeDialog();
+                void commit({ skipChecks: true, pushAfter: dialog.pushAfter });
+              }}
+            />
+          </>
+        )
+      }
+    >
+      <ul className="gbc-checkreport" data-testid="checks-report">
+        {dialog.report.results.map((r) => (
+          <li key={r.id} data-check={r.id} data-status={r.status}>
+            <span className="gbc-option-label">{STRINGS.checks[r.id]}</span>
+            <span className={`gbc-checkstatus gbc-checkstatus-${r.status}`}>{CHECK_STATUS_LABEL[r.status]}</span>
+            {r.details && <span className="gbc-checkdetails">{r.details}</span>}
+          </li>
+        ))}
+      </ul>
+    </Shell>
+  );
+}
+
+function AbortMergeDialog({ dialog }: { dialog: Extract<Dialog, { kind: 'abortMerge' }> }) {
+  const repos = usePanelStore((s) => s.repos);
+  const confirmAbortMerge = usePanelStore((s) => s.confirmAbortMerge);
+  const closeDialog = usePanelStore((s) => s.closeDialog);
+  return (
+    <Shell
+      title={D.abortTitle}
+      testId="dialog-abort"
+      footer={
+        <>
+          <Btn label={A.cancel} onClick={closeDialog} />
+          <Btn label={A.abort} primary danger testId="dialog-ok" onClick={() => void confirmAbortMerge()} />
+        </>
+      }
+    >
+      <p>{D.abortBody(repos[dialog.repoId]?.repo.name ?? dialog.repoId)}</p>
+    </Shell>
+  );
+}
+
+function UndoCommitDialog({ dialog }: { dialog: Extract<Dialog, { kind: 'undoCommit' }> }) {
+  const repos = usePanelStore((s) => s.repos);
+  const confirmUndoCommit = usePanelStore((s) => s.confirmUndoCommit);
+  const closeDialog = usePanelStore((s) => s.closeDialog);
+  const status = repos[dialog.repoId];
+  return (
+    <Shell
+      title={D.undoTitle}
+      testId="dialog-undo"
+      footer={
+        <>
+          <Btn label={A.cancel} onClick={closeDialog} />
+          <Btn label={A.undoCommit} primary danger testId="dialog-ok" onClick={() => void confirmUndoCommit()} />
+        </>
+      }
+    >
+      <p>{D.undoBody(status?.repo.name ?? dialog.repoId, status?.branch.oid?.slice(0, 7) ?? '')}</p>
+    </Shell>
+  );
+}
+
+function SkipHooksDialog({ dialog }: { dialog: Extract<Dialog, { kind: 'skipHooks' }> }) {
+  const commit = usePanelStore((s) => s.commit);
+  const closeDialog = usePanelStore((s) => s.closeDialog);
+  return (
+    <Shell
+      title={D.skipHooksTitle}
+      testId="dialog-skiphooks"
+      footer={
+        <>
+          <Btn label={A.cancel} onClick={closeDialog} />
+          <Btn
+            label={STRINGS.recovery.skipHooksRetry}
+            primary
+            testId="dialog-ok"
+            onClick={() => {
+              closeDialog();
+              void commit({ skipChecks: true, noVerify: true, pushAfter: dialog.pushAfter });
+            }}
+          />
+        </>
+      }
+    >
+      <p>{D.skipHooksBody}</p>
+    </Shell>
+  );
+}
+
+function PickChangelistDialog() {
+  const lists = usePanelStore((s) => s.changelists?.lists ?? []);
+  const activeId = usePanelStore((s) => s.changelists?.activeId);
+  const setActiveChangelist = usePanelStore((s) => s.setActiveChangelist);
+  const closeDialog = usePanelStore((s) => s.closeDialog);
+  return (
+    <Shell
+      title={STRINGS.misc.pickChangelist}
+      testId="dialog-pickchangelist"
+      footer={<Btn label={A.close} onClick={closeDialog} />}
+    >
+      <ul className="gbc-picklist" data-testid="pick-changelists">
+        {lists.map((l) => (
+          <li key={l.id}>
+            <button
+              type="button"
+              className={`gbc-menu-item${l.id === activeId ? ' gbc-pick-active' : ''}`}
+              data-testid={`pick-${l.id}`}
+              onClick={() => void setActiveChangelist(l.id)}
+            >
+              {l.id === activeId && <Icon name="check" size={12} />}
+              {l.name}
+            </button>
+          </li>
+        ))}
+      </ul>
+    </Shell>
+  );
+}
+
+function DropStashDialog() {
+  const confirmDropStash = usePanelStore((s) => s.confirmDropStash);
+  const closeDialog = usePanelStore((s) => s.closeDialog);
+  return (
+    <Shell
+      title={D.dropStashTitle}
+      testId="dialog-dropstash"
+      footer={
+        <>
+          <Btn label={A.cancel} onClick={closeDialog} />
+          <Btn label={A.delete} primary danger testId="dialog-ok" onClick={() => void confirmDropStash()} />
+        </>
+      }
+    >
+      <p>{D.dropStashBody}</p>
+    </Shell>
+  );
+}
+
+function PopStashDialog() {
+  const confirmPopStash = usePanelStore((s) => s.confirmPopStash);
+  const closeDialog = usePanelStore((s) => s.closeDialog);
+  return (
+    <Shell
+      title={D.popStashTitle}
+      testId="dialog-popstash"
+      footer={
+        <>
+          <Btn label={A.cancel} onClick={closeDialog} />
+          <Btn label={STRINGS.menus.stashEntry.pop} primary testId="dialog-ok" onClick={() => void confirmPopStash()} />
+        </>
+      }
+    >
+      <p>{D.popStashBody}</p>
+    </Shell>
+  );
+}
+
+function DeleteShelfDialog({ dialog }: { dialog: Extract<Dialog, { kind: 'deleteShelf' }> }) {
+  const entries = usePanelStore((s) => s.shelfTab?.entries ?? []);
+  const confirmDeleteShelf = usePanelStore((s) => s.confirmDeleteShelf);
+  const closeDialog = usePanelStore((s) => s.closeDialog);
+  const entry = entries.find((e) => e.id === dialog.id);
+  return (
+    <Shell
+      title={D.deleteShelfTitle}
+      testId="dialog-deleteshelf"
+      footer={
+        <>
+          <Btn label={A.cancel} onClick={closeDialog} />
+          <Btn label={A.delete} primary danger testId="dialog-ok" onClick={() => void confirmDeleteShelf()} />
+        </>
+      }
+    >
+      <p>{D.deleteShelfBody(entry?.name ?? dialog.id)}</p>
+    </Shell>
+  );
+}
+
+export function Dialogs() {
+  const dialog = usePanelStore((s) => s.dialog);
+  if (!dialog) {
+    return null;
+  }
+  switch (dialog.kind) {
+    case 'rollback':
+      return <RollbackDialog dialog={dialog} />;
+    case 'deleteFiles':
+      return <DeleteFilesDialog dialog={dialog} />;
+    case 'shelve':
+      return <ShelveDialog dialog={dialog} />;
+    case 'unshelve':
+      return <UnshelveDialog dialog={dialog} />;
+    case 'stashCreate':
+      return <StashCreateDialog dialog={dialog} />;
+    case 'moveChangelist':
+      return <MoveChangelistDialog dialog={dialog} />;
+    case 'newChangelist':
+      return <NewChangelistDialog dialog={dialog} />;
+    case 'renameChangelist':
+      return <RenameChangelistDialog dialog={dialog} />;
+    case 'editComment':
+      return <EditCommentDialog dialog={dialog} />;
+    case 'deleteChangelist':
+      return <DeleteChangelistDialog dialog={dialog} />;
+    case 'modeSwitch':
+      return <ModeSwitchDialog dialog={dialog} />;
+    case 'changelistConflict':
+      return <ChangelistConflictDialog dialog={dialog} />;
+    case 'push':
+      return <PushDialog dialog={dialog} />;
+    case 'amendPushed':
+      return <AmendPushedDialog />;
+    case 'checksReport':
+      return <ChecksReportDialog dialog={dialog} />;
+    case 'abortMerge':
+      return <AbortMergeDialog dialog={dialog} />;
+    case 'undoCommit':
+      return <UndoCommitDialog dialog={dialog} />;
+    case 'skipHooks':
+      return <SkipHooksDialog dialog={dialog} />;
+    case 'pickChangelist':
+      return <PickChangelistDialog />;
+    case 'dropStash':
+      return <DropStashDialog />;
+    case 'popStash':
+      return <PopStashDialog />;
+    case 'deleteShelf':
+      return <DeleteShelfDialog dialog={dialog} />;
+  }
+}

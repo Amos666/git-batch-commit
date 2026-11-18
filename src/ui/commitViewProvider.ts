@@ -4,14 +4,19 @@ import { MessageGateway } from './messageGateway';
 
 export class CommitViewProvider implements vscode.WebviewViewProvider {
   static readonly viewType = 'gitBatchCommit.commitPanel';
+  static readonly logViewType = 'gitBatchCommit.logPanel';
+
+  private viewRef: vscode.WebviewView | undefined;
 
   constructor(
     private readonly extensionUri: vscode.Uri,
     private readonly wireBackend: (gateway: MessageGateway) => vscode.Disposable,
     private readonly log: (line: string) => void = () => {},
+    private readonly view: 'commit' | 'log' = 'commit',
   ) {}
 
   resolveWebviewView(view: vscode.WebviewView): void {
+    this.viewRef = view;
     view.webview.options = {
       enableScripts: true,
       localResourceRoots: [vscode.Uri.joinPath(this.extensionUri, 'dist')],
@@ -20,11 +25,24 @@ export class CommitViewProvider implements vscode.WebviewViewProvider {
     const backend = this.wireBackend(gateway);
     view.webview.html = this.renderHtml(view.webview);
     const receiver = view.webview.onDidReceiveMessage((msg) => void gateway.handle(msg));
+    const disposables = [receiver];
+    if (this.view === 'commit') {
+      const syncVisible = (): void => {
+        void vscode.commands.executeCommand('setContext', 'gitBatchCommit.panelVisible', view.visible);
+      };
+      syncVisible();
+      disposables.push(view.onDidChangeVisibility(syncVisible));
+    }
     view.onDidDispose(() => {
-      receiver.dispose();
+      disposables.forEach((d) => d.dispose());
       backend.dispose();
       gateway.dispose();
+      this.viewRef = undefined;
     });
+  }
+
+  focusView(): void {
+    this.viewRef?.show();
   }
 
   private renderHtml(webview: vscode.Webview): string {
@@ -50,7 +68,7 @@ export class CommitViewProvider implements vscode.WebviewViewProvider {
 </style>
 </head>
 <body>
-<div id="root"></div>
+<div id="root" data-view="${this.view}"></div>
 <script nonce="${nonce}" src="${scriptUri.toString()}"></script>
 </body>
 </html>`;

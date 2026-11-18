@@ -1,257 +1,252 @@
 import { useEffect } from 'react';
-import { CommitBox } from './CommitBox';
-import { HunkPicker } from './HunkPicker';
-import { LogPanel } from './LogPanel';
-import { ErrorActions, ResultPanel } from './ResultPanel';
-import { ShelfPanel } from './ShelfPanel';
-import { StashPanel } from './StashPanel';
-import { subscribeEvents, usePanelStore } from './store';
-import { request } from './bridge';
-import { VirtualPanel } from './VirtualPanel';
+import { StoreProvider, useInstance, usePanelStore, useStoreApi } from './state/StoreContext';
+import type { PanelStoreInstance } from './state/createStore';
+import { isEditableTarget, resolveKey, TEXTAREA_ALLOWED } from './state/keymap';
+import { splitRefKey } from './state/types';
+import { TabBar } from './components/TabBar';
+import { Toolbar } from './components/Toolbar';
+import { ChangeTree } from './components/tree/ChangeTree';
+import { MessageEditor } from './components/message/MessageEditor';
+import { OptionsPanel } from './components/options/OptionsPanel';
+import { CommitActions } from './components/CommitActions';
+import { ShelfTab } from './components/ShelfTab';
+import { StashTab } from './components/StashTab';
+import { LogView } from './components/LogView';
+import { ContextMenu } from './components/menus/ContextMenu';
+import { Dialogs } from './components/dialogs/Dialogs';
+import { BranchPopup } from './components/BranchPopup';
+import { SequencerBanner } from './components/banners/SequencerBanner';
+import { MergeBanner } from './components/banners/MergeBanner';
+import { ProgressBanner } from './components/banners/ProgressBanner';
+import { BackendUnavailable } from './components/banners/BackendUnavailable';
+import {
+  ErrorBanner,
+  IndexModifiedBanner,
+  InitializingBanner,
+  ProtocolMismatchBanner,
+} from './components/banners/StatusBanners';
 
-function BranchPicker() {
-  const picker = usePanelStore((s) => s.branchPicker);
-  const repos = usePanelStore((s) => s.repos);
-  const close = usePanelStore((s) => s.closeBranchPicker);
-  const checkout = usePanelStore((s) => s.checkoutBranch);
-  const setField = usePanelStore((s) => s.setBranchField);
-  const create = usePanelStore((s) => s.createBranch);
-  const startRename = usePanelStore((s) => s.startRename);
-  const confirmRename = usePanelStore((s) => s.confirmRename);
-  const requestDelete = usePanelStore((s) => s.requestDeleteBranch);
-  const confirmDelete = usePanelStore((s) => s.confirmDeleteBranch);
-  const compare = usePanelStore((s) => s.compareBranch);
-  if (!picker) {
-    return null;
-  }
-  const repoName = repos[picker.repoId]?.repo.name ?? picker.repoId;
-  return (
-    <div className="gbc-overlay gbc-branchmgr">
-      <div className="gbc-overlay-head">
-        <span>分支管理 · {repoName}</span>
-        <button className="gbc-linkbtn" onClick={close}>关闭</button>
-      </div>
-      <div className="gbc-branchcreate">
-        <input
-          className="gbc-branchinput"
-          placeholder="新分支名"
-          value={picker.newBranch}
-          disabled={picker.busy}
-          onChange={(e) => setField('newBranch', e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter') void create();
-          }}
-        />
-        <button
-          className="gbc-btn"
-          disabled={picker.busy || !picker.newBranch.trim()}
-          onClick={() => void create()}
-        >
-          创建并切换
-        </button>
-      </div>
-      {picker.error && <div className="gbc-op">{picker.error}</div>}
-      <div className="gbc-branchlist">
-        {picker.branches.map((b) => (
-          <div key={b.name} className="gbc-branchrow">
-            <button
-              className={`gbc-branchitem${b.current ? ' gbc-branchitem-current' : ''}`}
-              disabled={picker.busy}
-              onClick={() => void checkout(b.name)}
-            >
-              {b.current ? '● ' : ''}{b.name}
-            </button>
-            <span className="gbc-branchactions">
-              {!b.current && (
-                <button className="gbc-linkbtn" disabled={picker.busy} onClick={() => void compare(b.name)}>
-                  对比
-                </button>
-              )}
-              <button className="gbc-linkbtn" disabled={picker.busy} onClick={() => startRename(b.name)}>
-                重命名
-              </button>
-              {!b.current && (
-                <button className="gbc-linkbtn" disabled={picker.busy} onClick={() => requestDelete(b.name)}>
-                  删除
-                </button>
-              )}
-            </span>
-            {picker.renaming === b.name && (
-              <div className="gbc-branchconfirm">
-                <input
-                  className="gbc-branchinput"
-                  value={picker.renameTo}
-                  disabled={picker.busy}
-                  onChange={(e) => setField('renameTo', e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') void confirmRename();
-                    if (e.key === 'Escape') {
-                      e.stopPropagation();
-                      startRename(null);
-                    }
-                  }}
-                />
-                <button
-                  className="gbc-btn"
-                  disabled={picker.busy || !picker.renameTo.trim() || picker.renameTo.trim() === b.name}
-                  onClick={() => void confirmRename()}
-                >
-                  确认
-                </button>
-                <button className="gbc-linkbtn" onClick={() => startRename(null)}>取消</button>
-              </div>
-            )}
-            {picker.confirmDelete === b.name && (
-              <div className="gbc-branchconfirm">
-                <span className="gbc-confirmtext">删除分支 {b.name}？未合并的提交将被 Git 拒绝删除。</span>
-                <button className="gbc-btn gbc-btn-danger" disabled={picker.busy} onClick={() => void confirmDelete()}>
-                  确认删除
-                </button>
-                <button className="gbc-linkbtn" onClick={() => requestDelete(null)}>取消</button>
-              </div>
-            )}
-          </div>
-        ))}
-        {picker.branches.length === 0 && !picker.error && <div className="gbc-op">没有本地分支</div>}
-      </div>
-    </div>
-  );
-}
+let lastChordAt = 0;
+let lastChordTarget: HTMLElement | null = null;
 
-function AbortConfirm() {
-  const repoId = usePanelStore((s) => s.abortConfirm);
-  const repos = usePanelStore((s) => s.repos);
-  const request = usePanelStore((s) => s.requestAbortMerge);
-  const confirm = usePanelStore((s) => s.confirmAbortMerge);
-  if (!repoId) {
-    return null;
-  }
-  const repoName = repos[repoId]?.repo.name ?? repoId;
-  return (
-    <div className="gbc-overlay">
-      <div className="gbc-confirm">
-        中止 {repoName} 进行中的合并/变基/拣选/反转？未提交的进度将被丢弃，工作区恢复到操作前状态。
-        <div className="gbc-actions">
-          <button className="gbc-btn gbc-btn-danger" onClick={() => void confirm()}>确认中止</button>
-          <button className="gbc-btn gbc-btn-secondary" onClick={() => request(null)}>取消</button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function UndoConfirm() {
-  const repoId = usePanelStore((s) => s.undoConfirm);
-  const repos = usePanelStore((s) => s.repos);
-  const request = usePanelStore((s) => s.requestUndoCommit);
-  const confirm = usePanelStore((s) => s.confirmUndoCommit);
-  if (!repoId) {
-    return null;
-  }
-  const status = repos[repoId];
-  const repoName = status?.repo.name ?? repoId;
-  const oid = status?.branch.oid?.slice(0, 7) ?? '';
-  return (
-    <div className="gbc-overlay">
-      <div className="gbc-confirm">
-        撤销 {repoName} 的最新提交{oid ? ` ${oid}` : ''}？改动将保留在暂存区（soft reset，不丢失工作区内容）。已推送到远端的提交会被阻止撤销。
-        <div className="gbc-actions">
-          <button className="gbc-btn gbc-btn-danger" onClick={() => void confirm()}>确认撤销</button>
-          <button className="gbc-btn gbc-btn-secondary" onClick={() => request(null)}>取消</button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-export function App() {
-  const panelState = usePanelStore((s) => s.panelState);
-  const lastError = usePanelStore((s) => s.lastError);
-  const dismissError = usePanelStore((s) => s.dismissError);
-  const runAction = usePanelStore((s) => s.runAction);
-
+function usePanelLifecycle(reportFocusEnabled: boolean): void {
+  const instance = useInstance();
   useEffect(() => {
-    const off = subscribeEvents();
-    const reportFocus = (focused: boolean) => {
-      void request('ui.focus', { focused }).catch(() => {});
+    const off = instance.subscribeEvents();
+    if (!reportFocusEnabled) {
+      return off;
+    }
+    const reportFocus = (focused: boolean): void => {
+      void instance.request('ui.focus', { focused }).catch(() => {});
     };
-    const onFocus = () => reportFocus(true);
-    const onBlur = () => reportFocus(false);
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key !== 'Escape') {
+    const onFocus = (): void => reportFocus(true);
+    const onBlur = (): void => {
+      // the workbench steals iframe focus when it processes a forwarded chord;
+      // take it back so panel chords keep working (IDEA keeps tool-window focus)
+      if (Date.now() - lastChordAt < 500) {
+        // element focus (unlike window.focus) re-focuses the iframe itself;
+        // deferred so it lands after the workbench finishes its focus move
+        setTimeout(() => {
+          if (!document.hasFocus()) {
+            if (lastChordTarget?.isConnected) {
+              lastChordTarget.focus();
+            } else {
+              window.focus();
+            }
+            reportFocus(true);
+          }
+        }, 50);
         return;
       }
-      const s = usePanelStore.getState();
-      if (s.abortConfirm) {
-        s.requestAbortMerge(null);
-      } else if (s.undoConfirm) {
-        s.requestUndoCommit(null);
-      } else if (s.hunkPicker) {
-        s.closeHunkPicker();
-      } else if (s.shelfPanel) {
-        s.closeShelfPanel();
-      } else if (s.stashPanel) {
-        s.closeStashPanel();
-      } else if (s.logPanel) {
-        s.closeLogPanel();
-      } else if (s.branchPicker) {
-        s.closeBranchPicker();
-      } else if (s.historyOpen) {
-        void s.toggleHistory();
-      } else if (s.confirmNoVerify || s.lastError) {
-        s.dismissError();
-      }
+      reportFocus(false);
     };
     window.addEventListener('focus', onFocus);
     window.addEventListener('blur', onBlur);
-    window.addEventListener('keydown', onKeyDown);
+    // window focus events can be missed when the iframe gains focus through
+    // element focus alone; focusin always fires for DOM focus inside the panel
+    document.addEventListener('focusin', onFocus);
     reportFocus(document.hasFocus());
     return () => {
       off();
       window.removeEventListener('focus', onFocus);
       window.removeEventListener('blur', onBlur);
-      window.removeEventListener('keydown', onKeyDown);
+      document.removeEventListener('focusin', onFocus);
       reportFocus(false);
     };
-  }, []);
+  }, [instance]);
+}
 
-  if (panelState === 'initializing') {
-    return <div className="gbc-guidance">正在绑定内置 Git 扩展…</div>;
-  }
+function useKeymap(): void {
+  const api = useStoreApi();
+  useEffect(() => {
+    // capture phase: this handler owns Escape and panel chords, so overlay
+    // components never double-close on a single keypress
+    const onKeyDown = (e: KeyboardEvent): void => {
+      const s = api.getState();
+      if (e.key === 'Escape') {
+        e.stopPropagation();
+        if (s.contextMenu) {
+          s.closeContextMenu();
+        } else if (s.dialog && !s.dialogBusy) {
+          s.closeDialog();
+        } else if (s.branchPicker) {
+          s.closeBranchPicker();
+        } else if (s.historyOpen) {
+          void s.toggleHistory();
+        } else if (s.lastError) {
+          s.dismissError();
+        } else if (s.highlighted.length > 0) {
+          s.clearHighlight();
+        }
+        return;
+      }
+      const command = resolveKey(e);
+      if (!command) {
+        return;
+      }
+      if (s.dialog || s.branchPicker || s.contextMenu) {
+        return;
+      }
+      if (isEditableTarget(e.target) && !TEXTAREA_ALLOWED.has(command)) {
+        return;
+      }
+      const target = e.target instanceof HTMLElement ? e.target : null;
+      if (command === 'toggleIncluded' && target?.tagName === 'BUTTON') {
+        return;
+      }
+      lastChordAt = Date.now();
+      lastChordTarget = e.target instanceof HTMLElement ? e.target : null;
+      const refs = s.highlighted.map(splitRefKey);
+      switch (command) {
+        case 'commit':
+          e.preventDefault();
+          void s.commit();
+          break;
+        case 'commitAndPush':
+          e.preventDefault();
+          void s.commit({ pushAfter: true });
+          break;
+        case 'push':
+          e.preventDefault();
+          s.requestPush(s.repoOrder.filter((id) => s.repos[id]?.branch.oid));
+          break;
+        case 'diff': {
+          const first = refs[0];
+          if (first) {
+            e.preventDefault();
+            const change = s.repos[first.repoId]?.changes.find((c) => c.path === first.path);
+            void s.openDiff(first.repoId, first.path, change?.staged && s.mode === 'staging' ? 'staged' : 'head');
+          }
+          break;
+        }
+        case 'addToVcs':
+          if (refs.length > 0) {
+            e.preventDefault();
+            void s.setIncluded(refs, true);
+          }
+          break;
+        case 'moveChangelist':
+          if (refs.length > 0 && s.mode === 'changelist') {
+            e.preventDefault();
+            s.openDialog({ kind: 'moveChangelist', refs, targetId: s.changelists?.activeId ?? 'default' });
+          }
+          break;
+        case 'toggleOptions':
+          e.preventDefault();
+          s.toggleOptions();
+          break;
+        case 'refresh':
+          e.preventDefault();
+          void s.refresh();
+          break;
+        case 'pickChangelist':
+          if (s.mode === 'changelist') {
+            e.preventDefault();
+            s.openDialog({ kind: 'pickChangelist' });
+          }
+          break;
+        case 'delete':
+          if (refs.length > 0) {
+            e.preventDefault();
+            s.openDialog({ kind: 'deleteFiles', refs });
+          }
+          break;
+        case 'toggleIncluded':
+          if (refs.length > 0) {
+            e.preventDefault();
+            for (const ref of refs) {
+              void s.toggleIncluded(ref);
+            }
+          }
+          break;
+      }
+    };
+    document.addEventListener('keydown', onKeyDown, true);
+    return () => document.removeEventListener('keydown', onKeyDown, true);
+  }, [api]);
+}
 
-  if (panelState === 'git-extension-unavailable') {
-    return (
-      <div className="gbc-guidance">
-        <p>内置 Git 扩展（vscode.git）不可用。</p>
-        <p>请确认已启用内置 Git 扩展，且系统已安装 Git。</p>
-        <button className="gbc-btn" onClick={() => void runAction('openGitSettings', { code: 'GIT_EXTENSION_UNAVAILABLE', message: '', actions: [] })}>
-          打开 Git 设置
-        </button>
-      </div>
-    );
-  }
-
+function CommitTab() {
   return (
-    <div className="gbc-panel">
-      <VirtualPanel />
-      <BranchPicker />
-      <HunkPicker />
-      <StashPanel />
-      <ShelfPanel />
-      <LogPanel />
-      <AbortConfirm />
-      <UndoConfirm />
-      {lastError && (
-        <div className="gbc-error">
-          {lastError.message}
-          <ErrorActions error={lastError} />
-          <div className="gbc-actions">
-            <button className="gbc-linkbtn" onClick={dismissError}>关闭</button>
-          </div>
-        </div>
-      )}
-      <ResultPanel />
-      <CommitBox />
+    <>
+      <Toolbar />
+      <ChangeTree />
+      <MessageEditor />
+      <OptionsPanel />
+      <CommitActions />
+    </>
+  );
+}
+
+export function App() {
+  usePanelLifecycle(true);
+  useKeymap();
+  const activeTab = usePanelStore((s) => s.activeTab);
+  const panelState = usePanelStore((s) => s.panelState);
+  return (
+    <div className="gbc-panel" data-testid="commit-panel">
+      <TabBar />
+      <ProtocolMismatchBanner />
+      <BackendUnavailable />
+      <InitializingBanner />
+      <SequencerBanner />
+      <MergeBanner />
+      <IndexModifiedBanner />
+      <ErrorBanner />
+      <ProgressBanner />
+      {panelState === 'ready' && activeTab === 'commit' && <CommitTab />}
+      {panelState === 'ready' && activeTab === 'shelf' && <ShelfTab />}
+      {panelState === 'ready' && activeTab === 'stash' && <StashTab />}
+      <ContextMenu />
+      <Dialogs />
+      <BranchPopup />
     </div>
   );
+}
+
+/** Entry for the standalone Log webview view (Alt+9). */
+export function LogApp() {
+  // only the commit view owns gitBatchCommit.panelFocused; a hidden log
+  // iframe reporting blur would clobber the commit panel's focus context
+  usePanelLifecycle(false);
+  const api = useStoreApi();
+  const repoId = usePanelStore((s) => s.logView?.repoId);
+  useEffect(() => {
+    const s = api.getState();
+    if (s.logView && s.logView.entries.length === 0 && !s.logView.busy) {
+      void s.reloadLog();
+    }
+  }, [api, repoId]);
+  return (
+    <div className="gbc-panel" data-testid="log-panel">
+      <SequencerBanner />
+      <ErrorBanner />
+      <LogView />
+      <Dialogs />
+    </div>
+  );
+}
+
+export function Root({ instance, view }: { instance: PanelStoreInstance; view: 'commit' | 'log' }) {
+  return <StoreProvider instance={instance}>{view === 'log' ? <LogApp /> : <App />}</StoreProvider>;
 }

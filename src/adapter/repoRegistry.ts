@@ -1,18 +1,18 @@
 import { createHash } from 'node:crypto';
 import * as path from 'node:path';
-import * as vscode from 'vscode';
-import type { Repository } from './gitApiTypes';
+import { Emitter } from '../core/events';
+import type { GitKernel, KernelRepo } from '../kernel/types';
 import type { RepoDescriptor } from '../protocol/models';
 
-export function repoIdFor(rootUri: vscode.Uri): string {
-  return createHash('sha1').update(rootUri.fsPath).digest('hex').slice(0, 12);
+export function repoIdFor(rootPath: string): string {
+  return createHash('sha1').update(rootPath).digest('hex').slice(0, 12);
 }
 
-export function descriptorFor(repo: Repository): RepoDescriptor {
-  const rootPath = repo.rootUri.fsPath;
+export function descriptorFor(repo: KernelRepo): RepoDescriptor {
+  const rootPath = repo.rootPath;
   return {
-    id: repoIdFor(repo.rootUri),
-    rootUri: repo.rootUri.toString(),
+    id: repoIdFor(rootPath),
+    rootUri: repo.rootUri,
     rootPath,
     name: path.basename(rootPath) || rootPath,
     kind: repo.kind,
@@ -20,30 +20,30 @@ export function descriptorFor(repo: Repository): RepoDescriptor {
 }
 
 interface Entry {
-  repo: Repository;
+  repo: KernelRepo;
   descriptor: RepoDescriptor;
 }
 
-export class RepoRegistry implements vscode.Disposable {
+export class RepoRegistry {
   private readonly entries = new Map<string, Entry>();
-  private readonly opened = new vscode.EventEmitter<RepoDescriptor>();
-  private readonly closed = new vscode.EventEmitter<string>();
-  private readonly disposables: vscode.Disposable[] = [];
+  private readonly opened = new Emitter<RepoDescriptor>();
+  private readonly closed = new Emitter<string>();
+  private readonly unsubs: (() => void)[] = [];
 
   readonly onDidOpen = this.opened.event;
   readonly onDidClose = this.closed.event;
 
-  constructor(private readonly api: { repositories: Repository[]; onDidOpenRepository: vscode.Event<Repository>; onDidCloseRepository: vscode.Event<Repository> }) {
-    for (const repo of api.repositories) {
+  constructor(kernel: GitKernel) {
+    for (const repo of kernel.repositories) {
       this.register(repo);
     }
-    this.disposables.push(
-      api.onDidOpenRepository((repo) => this.register(repo)),
-      api.onDidCloseRepository((repo) => this.unregister(repo)),
+    this.unsubs.push(
+      kernel.onDidOpenRepository((repo) => this.register(repo)),
+      kernel.onDidCloseRepository((repo) => this.unregister(repo)),
     );
   }
 
-  private register(repo: Repository): void {
+  private register(repo: KernelRepo): void {
     const descriptor = descriptorFor(repo);
     if (this.entries.has(descriptor.id)) {
       return;
@@ -52,14 +52,14 @@ export class RepoRegistry implements vscode.Disposable {
     this.opened.fire(descriptor);
   }
 
-  private unregister(repo: Repository): void {
-    const id = repoIdFor(repo.rootUri);
+  private unregister(repo: KernelRepo): void {
+    const id = repoIdFor(repo.rootPath);
     if (this.entries.delete(id)) {
       this.closed.fire(id);
     }
   }
 
-  get(repoId: string): Repository | undefined {
+  get(repoId: string): KernelRepo | undefined {
     return this.entries.get(repoId)?.repo;
   }
 
@@ -74,8 +74,8 @@ export class RepoRegistry implements vscode.Disposable {
   dispose(): void {
     this.opened.dispose();
     this.closed.dispose();
-    for (const d of this.disposables) {
-      d.dispose();
+    for (const unsub of this.unsubs) {
+      unsub();
     }
   }
 }

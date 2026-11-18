@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import type { Uri } from 'vscode';
-import { Status } from '../../src/adapter/gitApiTypes';
-import type { Change } from '../../src/adapter/gitApiTypes';
+import { KernelStatus } from '../../src/kernel/types';
+import type { KernelChange } from '../../src/kernel/types';
 import { mapBranch, mapRepoStatus } from '../../src/adapter/stateMapper';
 import type { StateMapperInput } from '../../src/adapter/stateMapper';
 import type { RepoDescriptor } from '../../src/protocol/models';
@@ -16,15 +15,12 @@ const descriptor: RepoDescriptor = {
   kind: 'repository',
 };
 
-function uri(fsPath: string): Uri {
-  return { fsPath, toString: () => `file://${fsPath}` } as unknown as Uri;
-}
-
-function change(relPath: string, status: Status, originalRel?: string): Change {
+function change(relPath: string, status: KernelStatus, originalRel?: string): KernelChange {
   return {
-    uri: uri(`${ROOT}/${relPath}`),
-    originalUri: uri(`${ROOT}/${originalRel ?? relPath}`),
-    renameUri: undefined,
+    path: relPath,
+    uri: `file://${ROOT}/${relPath}`,
+    origPath: originalRel,
+    origUri: originalRel ? `file://${ROOT}/${originalRel}` : undefined,
     status,
   };
 }
@@ -45,8 +41,8 @@ describe('mapRepoStatus', () => {
   it('merges partially staged file into one entry', () => {
     const status = mapRepoStatus(
       input({
-        indexChanges: [change('a.ts', Status.INDEX_MODIFIED)],
-        workingTreeChanges: [change('a.ts', Status.MODIFIED)],
+        indexChanges: [change('a.ts', KernelStatus.INDEX_MODIFIED)],
+        workingTreeChanges: [change('a.ts', KernelStatus.MODIFIED)],
       }),
       1,
     );
@@ -60,7 +56,7 @@ describe('mapRepoStatus', () => {
   });
 
   it('maps untracked files', () => {
-    const status = mapRepoStatus(input({ untrackedChanges: [change('new.txt', Status.UNTRACKED)] }), 1);
+    const status = mapRepoStatus(input({ untrackedChanges: [change('new.txt', KernelStatus.UNTRACKED)] }), 1);
     const entry = status.changes[0];
     expect(entry?.kind).toBe('untracked');
     expect(entry?.worktreeStatus).toBe('?');
@@ -68,7 +64,7 @@ describe('mapRepoStatus', () => {
   });
 
   it('maps index rename with original path', () => {
-    const status = mapRepoStatus(input({ indexChanges: [change('new.ts', Status.INDEX_RENAMED, 'old.ts')] }), 1);
+    const status = mapRepoStatus(input({ indexChanges: [change('new.ts', KernelStatus.INDEX_RENAMED, 'old.ts')] }), 1);
     const entry = status.changes[0];
     expect(entry?.kind).toBe('renamed');
     expect(entry?.indexStatus).toBe('R');
@@ -79,8 +75,8 @@ describe('mapRepoStatus', () => {
   it('marks merge conflicts and keeps them out of staged', () => {
     const status = mapRepoStatus(
       input({
-        mergeChanges: [change('conflict.ts', Status.BOTH_MODIFIED)],
-        indexChanges: [change('conflict.ts', Status.INDEX_MODIFIED)],
+        mergeChanges: [change('conflict.ts', KernelStatus.BOTH_MODIFIED)],
+        indexChanges: [change('conflict.ts', KernelStatus.INDEX_MODIFIED)],
       }),
       1,
     );
@@ -92,7 +88,7 @@ describe('mapRepoStatus', () => {
 
   it('handles special file names (spaces, unicode)', () => {
     const status = mapRepoStatus(
-      input({ workingTreeChanges: [change('中文 文件.txt', Status.MODIFIED)] }),
+      input({ workingTreeChanges: [change('中文 文件.txt', KernelStatus.MODIFIED)] }),
       1,
     );
     expect(status.changes[0]?.path).toBe('中文 文件.txt');
@@ -101,7 +97,7 @@ describe('mapRepoStatus', () => {
   it('sorts changes by path and assigns seq', () => {
     const status = mapRepoStatus(
       input({
-        workingTreeChanges: [change('z.ts', Status.MODIFIED), change('a.ts', Status.MODIFIED)],
+        workingTreeChanges: [change('z.ts', KernelStatus.MODIFIED), change('a.ts', KernelStatus.MODIFIED)],
       }),
       42,
     );
@@ -110,7 +106,7 @@ describe('mapRepoStatus', () => {
   });
 
   it('ignores ignored entries', () => {
-    const status = mapRepoStatus(input({ workingTreeChanges: [change('x.log', Status.IGNORED)] }), 1);
+    const status = mapRepoStatus(input({ workingTreeChanges: [change('x.log', KernelStatus.IGNORED)] }), 1);
     expect(status.changes).toHaveLength(0);
   });
 });

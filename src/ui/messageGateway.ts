@@ -33,6 +33,23 @@ export class MessageGateway implements vscode.Disposable {
 
   async handle(msg: unknown): Promise<void> {
     if (!isRequest(msg)) {
+      if (
+        typeof msg === 'object' && msg !== null &&
+        typeof (msg as { id?: unknown }).id === 'string' &&
+        typeof (msg as { method?: unknown }).method === 'string' &&
+        typeof (msg as { v?: unknown }).v === 'number'
+      ) {
+        void this.post({
+          v: PROTOCOL_VERSION,
+          id: (msg as { id: string }).id,
+          ok: false,
+          error: {
+            code: 'PROTOCOL_MISMATCH',
+            message: `Webview protocol v${(msg as { v: number }).v} does not match host v${PROTOCOL_VERSION}. Reload the window.`,
+            actions: [],
+          },
+        });
+      }
       return;
     }
     const handler = this.handlers.get(msg.method);
@@ -42,7 +59,7 @@ export class MessageGateway implements vscode.Disposable {
         v: PROTOCOL_VERSION,
         id: msg.id,
         ok: false,
-        error: { code: 'GENERIC', message: `未知方法: ${msg.method}`, actions: [] },
+        error: { code: 'GENERIC', message: `Unknown method: ${msg.method}`, actions: [] },
       };
     } else {
       const started = Date.now();

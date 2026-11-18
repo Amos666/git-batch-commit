@@ -1,11 +1,11 @@
-import * as vscode from 'vscode';
+import { Emitter } from './events';
 import type { OperationPhase, OperationState } from '../protocol/models';
 
 let nextId = 0;
 
-export class OperationTracker implements vscode.Disposable {
+export class OperationTracker {
   private readonly states = new Map<string, OperationState>();
-  private readonly progress = new vscode.EventEmitter<OperationState>();
+  private readonly progress = new Emitter<OperationState>();
 
   readonly onProgress = this.progress.event;
 

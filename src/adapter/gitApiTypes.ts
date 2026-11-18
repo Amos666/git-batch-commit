@@ -202,6 +202,8 @@ export interface Repository {
   pushTo?(remote?: string, refspec?: string, setUpstream?: boolean, force?: ForcePushMode, tags?: boolean): Promise<void>;
   branch?(name: string, checkout?: boolean, ref?: string): Promise<void>;
   getRefs?(query?: { type?: 'head' | 'remote' | 'tag'; contains?: string }): Promise<Ref[]>;
+  /** Force a `git status` rescan of the repository. */
+  refresh?(): Promise<void>;
 }
 
 export interface GitApi {

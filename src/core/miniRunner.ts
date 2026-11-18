@@ -24,7 +24,9 @@ export type MiniRequest =
   | { cmd: 'revert-abort' }
   | { cmd: 'reset-soft'; oid: string }
   | { cmd: 'remote-contains'; oid: string }
-  | { cmd: 'git-dir' };
+  | { cmd: 'git-dir' }
+  | { cmd: 'status-porcelain' }
+  | { cmd: 'commit'; messageFile: string; authorName?: string; authorEmail?: string; amend?: boolean; signoff?: boolean; noVerify?: boolean };
 
 export interface IndexEntry {
   mode: '100644' | '100755' | '120000';
@@ -72,12 +74,12 @@ export function buildArgs(req: MiniRequest): string[] {
   switch (req.cmd) {
     case 'update-index': {
       if (req.entries.length === 0 || req.entries.length > 1000) {
-        throw makeError('GENERIC', 'update-index 条目数量非法');
+        throw makeError('GENERIC', 'Invalid update-index entry count');
       }
       const args = ['update-index', '--add'];
       for (const e of req.entries) {
         if (!OID_RE.test(e.oid) || !validatePath(e.path)) {
-          throw makeError('GENERIC', 'update-index 参数非法');
+          throw makeError('GENERIC', 'Invalid update-index entry');
         }
         args.push('--cacheinfo', `${e.mode},${e.oid},${e.path}`);
       }
@@ -85,19 +87,19 @@ export function buildArgs(req: MiniRequest): string[] {
     }
     case 'ls-files':
       if (!validatePath(req.path)) {
-        throw makeError('GENERIC', 'ls-files 路径非法');
+        throw makeError('GENERIC', 'Invalid ls-files path');
       }
       return ['ls-files', '-s', '-z', '--', req.path];
     case 'stash-list':
       return ['stash', 'list', '-z', '--format=%gd%x00%H%x00%s'];
     case 'branch-rename':
       if (!validateBranchName(req.from) || !validateBranchName(req.to)) {
-        throw makeError('GENERIC', '分支名非法');
+        throw makeError('GENERIC', 'Invalid branch name');
       }
       return ['branch', '-m', req.from, req.to];
     case 'diff-worktree':
       if (!validatePath(req.path)) {
-        throw makeError('GENERIC', 'diff 路径非法');
+        throw makeError('GENERIC', 'Invalid diff path');
       }
       return ['diff', '--no-ext-diff', '--no-textconv', '--', req.path];
     case 'diff-head': {
@@ -106,12 +108,12 @@ export function buildArgs(req: MiniRequest): string[] {
     }
     case 'apply-check':
       if (!validatePatchPath(req.patchPath)) {
-        throw makeError('GENERIC', '补丁路径非法');
+        throw makeError('GENERIC', 'Invalid patch path');
       }
       return ['apply', '--check', ...(req.reverse ? ['--reverse'] : []), '--', req.patchPath];
     case 'apply':
       if (!validatePatchPath(req.patchPath)) {
-        throw makeError('GENERIC', '补丁路径非法');
+        throw makeError('GENERIC', 'Invalid patch path');
       }
       return ['apply', '--', req.patchPath];
     case 'restore-head': {
@@ -120,12 +122,12 @@ export function buildArgs(req: MiniRequest): string[] {
     }
     case 'cherry-pick':
       if (!OID_RE.test(req.oid)) {
-        throw makeError('GENERIC', '提交 OID 非法');
+        throw makeError('GENERIC', 'Invalid commit OID');
       }
       return ['cherry-pick', req.oid];
     case 'revert':
       if (!OID_RE.test(req.oid)) {
-        throw makeError('GENERIC', '提交 OID 非法');
+        throw makeError('GENERIC', 'Invalid commit OID');
       }
       return ['revert', '--no-commit', req.oid];
     case 'cherry-pick-abort':
@@ -134,22 +136,65 @@ export function buildArgs(req: MiniRequest): string[] {
       return ['revert', '--abort'];
     case 'reset-soft':
       if (!OID_RE.test(req.oid)) {
-        throw makeError('GENERIC', '提交 OID 非法');
+        throw makeError('GENERIC', 'Invalid commit OID');
       }
       return ['reset', '--soft', req.oid];
     case 'remote-contains':
       if (!OID_RE.test(req.oid)) {
-        throw makeError('GENERIC', '提交 OID 非法');
+        throw makeError('GENERIC', 'Invalid commit OID');
       }
       return ['branch', '-r', '--contains', req.oid, '--format=%(refname)'];
     case 'git-dir':
       return ['rev-parse', '--git-dir'];
+    case 'status-porcelain':
+      return ['status', '--porcelain=v1', '-z', '--untracked-files=no'];
+    case 'commit': {
+      if (!validatePatchPath(req.messageFile)) {
+        throw makeError('GENERIC', 'Invalid commit message file path');
+      }
+      if (req.authorName !== undefined && !validateAuthorField(req.authorName)) {
+        throw makeError('GENERIC', 'Invalid author name');
+      }
+      if (req.authorEmail !== undefined && !validateAuthorField(req.authorEmail)) {
+        throw makeError('GENERIC', 'Invalid author email');
+      }
+      const args = ['commit', '-F', req.messageFile];
+      if (req.amend) {
+        args.push('--amend');
+      }
+      if (req.signoff) {
+        args.push('--signoff');
+      }
+      if (req.noVerify) {
+        args.push('--no-verify');
+      }
+      return args;
+    }
   }
+}
+
+/** Author identity is injected via env, never argv; reject control chars and newlines. */
+function validateAuthorField(value: string): boolean {
+  return value.length > 0 && value.length <= 256 && !/[\0\r\n<>]/.test(value);
+}
+
+export function requestEnv(req: MiniRequest): Record<string, string> {
+  if (req.cmd === 'commit') {
+    const env: Record<string, string> = {};
+    if (req.authorName !== undefined) {
+      env.GIT_AUTHOR_NAME = req.authorName;
+    }
+    if (req.authorEmail !== undefined) {
+      env.GIT_AUTHOR_EMAIL = req.authorEmail;
+    }
+    return env;
+  }
+  return {};
 }
 
 function validatePaths(paths: string[]): string[] {
   if (paths.length === 0 || paths.length > 1000 || !paths.every(validatePath)) {
-    throw makeError('GENERIC', '路径列表非法');
+    throw makeError('GENERIC', 'Invalid path list');
   }
   return paths;
 }
@@ -174,9 +219,10 @@ export class MiniRunner {
       req.cmd === 'diff-head' ||
       req.cmd === 'apply-check' ||
       req.cmd === 'remote-contains' ||
-      req.cmd === 'git-dir';
+      req.cmd === 'git-dir' ||
+      req.cmd === 'status-porcelain';
     const prev = this.queues.get(repoRoot) ?? Promise.resolve();
-    const task = prev.then(() => this.execWithLockRetry(repoRoot, args, readOnly));
+    const task = prev.then(() => this.execWithLockRetry(repoRoot, args, readOnly, requestEnv(req)));
     this.queues.set(
       repoRoot,
       task.catch(() => {}),
@@ -184,11 +230,11 @@ export class MiniRunner {
     return task;
   }
 
-  private async execWithLockRetry(repoRoot: string, args: string[], readOnly: boolean): Promise<MiniResult> {
+  private async execWithLockRetry(repoRoot: string, args: string[], readOnly: boolean, extraEnv: Record<string, string>): Promise<MiniResult> {
     let lastErr: ProtocolError | undefined;
     for (let attempt = 0; attempt <= LOCK_RETRIES; attempt++) {
       try {
-        return await this.exec(repoRoot, args, readOnly);
+        return await this.exec(repoRoot, args, readOnly, extraEnv);
       } catch (err) {
         const pe = err as ProtocolError;
         if (pe.code !== 'LOCKED' || attempt === LOCK_RETRIES) {
@@ -198,10 +244,10 @@ export class MiniRunner {
         await sleep(100 * 2 ** attempt);
       }
     }
-    throw lastErr ?? makeError('LOCKED', '仓库被锁定');
+    throw lastErr ?? makeError('LOCKED', 'Repository is locked');
   }
 
-  private exec(repoRoot: string, args: string[], readOnly: boolean): Promise<MiniResult> {
+  private exec(repoRoot: string, args: string[], readOnly: boolean, extraEnv: Record<string, string>): Promise<MiniResult> {
     return new Promise((resolve, reject) => {
       const child = spawn(this.gitPath(), args, {
         cwd: repoRoot,
@@ -209,6 +255,7 @@ export class MiniRunner {
           ...process.env,
           GIT_TERMINAL_PROMPT: '0',
           ...(readOnly ? { GIT_OPTIONAL_LOCKS: '0' } : {}),
+          ...extraEnv,
         },
         stdio: ['ignore', 'pipe', 'pipe'],
       });
@@ -217,7 +264,7 @@ export class MiniRunner {
       let settled = false;
       const timer = setTimeout(() => {
         child.kill('SIGTERM');
-        finish(makeError('GENERIC', `git ${args[0]} 超时`));
+        finish(makeError('GENERIC', `git ${args[0]} timed out`));
       }, TIMEOUT_MS);
       const finish = (err?: ProtocolError, result?: MiniResult) => {
         if (settled) {
@@ -238,7 +285,7 @@ export class MiniRunner {
         }
       });
       child.on('error', (err) => {
-        finish(makeError('GIT_NOT_FOUND', `无法执行 git: ${err.message}`));
+        finish(makeError('GIT_NOT_FOUND', `Unable to execute git: ${err.message}`));
       });
       child.on('close', (code) => {
         if (code === 0) {
@@ -246,10 +293,10 @@ export class MiniRunner {
           return;
         }
         if (/index\.lock|unable to create.*lock|file exists/i.test(stderr)) {
-          finish(makeError('LOCKED', '仓库索引被其他 Git 进程锁定', ['retry']));
+          finish(makeError('LOCKED', 'Repository index is locked by another Git process', ['retry']));
           return;
         }
-        const firstLine = stderr.split('\n').find((l) => l.trim().length > 0) ?? `git ${args[0]} 失败 (exit ${code})`;
+        const firstLine = stderr.split('\n').find((l) => l.trim().length > 0) ?? `git ${args[0]} failed (exit ${code})`;
         finish(makeError('GENERIC', firstLine.length > 200 ? `${firstLine.slice(0, 200)}…` : firstLine));
       });
     });

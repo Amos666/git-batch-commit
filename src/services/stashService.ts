@@ -28,7 +28,7 @@ export class StashService {
     // older builds: whitelisted `stash list` fallback
     const desc = this.registry.descriptor(repoId);
     if (!desc) {
-      throw makeError('NO_REPOSITORY', `仓库不存在: ${repoId}`);
+      throw makeError('NO_REPOSITORY', `Repository not found: ${repoId}`);
     }
     const res = await this.mini.run(desc.rootPath, { cmd: 'stash-list' });
     const fields = res.stdout.toString('utf8').split('\0').filter((f) => f.length > 0);
@@ -52,7 +52,7 @@ export class StashService {
   async create(repoId: string, opts: { message?: string; includeUntracked?: boolean; staged?: boolean }): Promise<void> {
     const repo = this.repoOrThrow(repoId);
     if (!repo.createStash) {
-      throw makeError('GENERIC', '当前内置 Git API 版本不支持 stash');
+      throw makeError('CAPABILITY_UNAVAILABLE', 'The active git kernel does not support stash');
     }
     const message = opts.message?.trim().slice(0, MESSAGE_CAP);
     try {
@@ -70,7 +70,7 @@ export class StashService {
     const repo = this.repoOrThrow(repoId);
     this.assertIndex(index);
     if (!repo.applyStash) {
-      throw makeError('GENERIC', '当前内置 Git API 版本不支持 stash');
+      throw makeError('CAPABILITY_UNAVAILABLE', 'The active git kernel does not support stash');
     }
     try {
       await repo.applyStash(index);
@@ -83,7 +83,7 @@ export class StashService {
     const repo = this.repoOrThrow(repoId);
     this.assertIndex(index);
     if (!repo.popStash) {
-      throw makeError('GENERIC', '当前内置 Git API 版本不支持 stash');
+      throw makeError('CAPABILITY_UNAVAILABLE', 'The active git kernel does not support stash');
     }
     try {
       await repo.popStash(index);
@@ -96,7 +96,7 @@ export class StashService {
     const repo = this.repoOrThrow(repoId);
     this.assertIndex(index);
     if (!repo.dropStash) {
-      throw makeError('GENERIC', '当前内置 Git API 版本不支持 stash');
+      throw makeError('CAPABILITY_UNAVAILABLE', 'The active git kernel does not support stash');
     }
     try {
       // index is mandatory: upstream dropStash() without a number runs `stash clear`
@@ -109,14 +109,14 @@ export class StashService {
   private repoOrThrow(repoId: string) {
     const repo = this.registry.get(repoId);
     if (!repo) {
-      throw makeError('NO_REPOSITORY', `仓库不存在: ${repoId}`);
+      throw makeError('NO_REPOSITORY', `Repository not found: ${repoId}`);
     }
     return repo;
   }
 
   private assertIndex(index: number): void {
     if (!Number.isInteger(index) || index < 0 || index > 10_000) {
-      throw makeError('GENERIC', 'stash 序号非法');
+      throw makeError('GENERIC', 'Invalid stash index');
     }
   }
 }

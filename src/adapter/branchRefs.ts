@@ -7,3 +7,9 @@ export function mapLocalBranches(refs: Ref[], currentName: string | undefined): 
     .filter((r) => (r.type === 0 || r.type === 'head') && r.name)
     .map((r) => ({ name: r.name as string, commit: r.commit, current: r.name === currentName }));
 }
+
+export function mapRemoteBranches(refs: Ref[]): BranchRef[] {
+  return refs
+    .filter((r) => (r.type === 1 || r.type === 'remote') && r.name && r.name !== 'HEAD' && r.remote)
+    .map((r) => ({ name: r.name as string, remote: r.remote as string, commit: r.commit }));
+}

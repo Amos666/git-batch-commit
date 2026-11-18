@@ -2,7 +2,7 @@ import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { MiniRunner, buildArgs, validateBranchName, validatePath } from '../../src/core/miniRunner';
+import { MiniRunner, buildArgs, requestEnv, validateBranchName, validatePath } from '../../src/core/miniRunner';
 import { filterPatch } from '../../src/services/patchFilter';
 import type { ProtocolError } from '../../src/protocol/errors';
 
@@ -82,6 +82,31 @@ describe('miniRunner argument whitelist', () => {
     expect(() => buildArgs({ cmd: 'apply', patchPath: 'relative.diff' })).toThrow();
     expect(() => buildArgs({ cmd: 'apply', patchPath: '/a/../b.diff' })).toThrow();
     expect(() => buildArgs({ cmd: 'apply-check', patchPath: '/a\0b.diff' })).toThrow();
+  });
+
+  it('builds commit argv from a validated message file; author never reaches argv', () => {
+    expect(buildArgs({ cmd: 'commit', messageFile: '/store/msg.txt' })).toEqual(['commit', '-F', '/store/msg.txt']);
+    expect(buildArgs({ cmd: 'commit', messageFile: '/store/msg.txt', amend: true, signoff: true, noVerify: true })).toEqual([
+      'commit', '-F', '/store/msg.txt', '--amend', '--signoff', '--no-verify',
+    ]);
+    expect(buildArgs({ cmd: 'commit', messageFile: '/store/msg.txt', authorName: 'A U Thor', authorEmail: 'a@b.c' })).toEqual([
+      'commit', '-F', '/store/msg.txt',
+    ]);
+    expect(() => buildArgs({ cmd: 'commit', messageFile: 'relative.txt' })).toThrow();
+    expect(() => buildArgs({ cmd: 'commit', messageFile: '/a/../b.txt' })).toThrow();
+    expect(() => buildArgs({ cmd: 'commit', messageFile: '/store/m.txt', authorName: 'a\nb' })).toThrow();
+    expect(() => buildArgs({ cmd: 'commit', messageFile: '/store/m.txt', authorName: 'a<b>' })).toThrow();
+    expect(() => buildArgs({ cmd: 'commit', messageFile: '/store/m.txt', authorEmail: '' })).toThrow();
+    expect(() => buildArgs({ cmd: 'commit', messageFile: '/store/m.txt', authorName: 'x'.repeat(257) })).toThrow();
+  });
+
+  it('requestEnv injects author identity via env only for commit requests', () => {
+    expect(requestEnv({ cmd: 'commit', messageFile: '/m', authorName: 'A U Thor', authorEmail: 'a@b.c' })).toEqual({
+      GIT_AUTHOR_NAME: 'A U Thor',
+      GIT_AUTHOR_EMAIL: 'a@b.c',
+    });
+    expect(requestEnv({ cmd: 'commit', messageFile: '/m' })).toEqual({});
+    expect(requestEnv({ cmd: 'stash-list' })).toEqual({});
   });
 });
 

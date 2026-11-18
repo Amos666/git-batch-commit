@@ -1,162 +1,81 @@
-// CDP driver for headless VS Code trial: drive the panel via its webview frame
-import * as fs from 'node:fs';
+// End-to-end drive: check files → commit (changelist mode) → verify in Log → branch create/checkout.
+// Run via: xvfb-run -a node test/manual-run/launch.mjs drive.mjs
+import { check, clickTestId, finish, openView, panel, selectOption, setInput, shot, sleep, workbench } from './lib/cdp.mjs';
 
-const PORT = 9223;
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const wb = await workbench();
+await openView(wb, 'Commit');
+const { cdp, ev } = await panel('commit-panel');
 
-async function targets() {
-  return (await (await fetch(`http://127.0.0.1:${PORT}/json/list`)).json());
-}
-
-function connect(url) {
-  return new Promise((resolve, reject) => {
-    const ws = new WebSocket(url);
-    ws.addEventListener('open', () => resolve(ws));
-    ws.addEventListener('error', reject);
-  });
-}
-
-class Cdp {
-  constructor(ws) {
-    this.ws = ws;
-    this.id = 0;
+async function waitFor(fn, ms = 15000) {
+  const end = Date.now() + ms;
+  while (Date.now() < end) {
+    if (await fn()) return true;
+    await sleep(300);
   }
-  send(method, params = {}) {
-    const id = ++this.id;
-    return new Promise((resolve, reject) => {
-      const onMsg = (ev) => {
-        const msg = JSON.parse(ev.data);
-        if (msg.id === id) {
-          this.ws.removeEventListener('message', onMsg);
-          if (msg.error) reject(new Error(`${method}: ${JSON.stringify(msg.error.message)}`));
-          else resolve(msg.result);
-        }
-      };
-      this.ws.addEventListener('message', onMsg);
-      this.ws.send(JSON.stringify({ id, method, params }));
-    });
-  }
-  async eval(expression) {
-    const res = await this.send('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true });
-    if (res.exceptionDetails) {
-      throw new Error('eval: ' + JSON.stringify(res.exceptionDetails).slice(0, 250));
-    }
-    return res.result.value;
-  }
+  return false;
 }
+const ctrlClick = (sel) => ev(`(doc) => {
+  const el = doc.querySelector('${sel}');
+  if (!el) return false;
+  el.dispatchEvent(new doc.defaultView.MouseEvent('click', { bubbles: true, cancelable: true, ctrlKey: true }));
+  return true;
+}`);
 
-async function shot(cdp, name) {
-  const { data } = await cdp.send('Page.captureScreenshot', { format: 'png' });
-  fs.writeFileSync(`test/manual-run/${name}.png`, Buffer.from(data, 'base64'));
-  console.log('shot ->', name + '.png');
+// pick two tracked, non-conflicted rows from the first repo that has two
+const picks = await ev(`(doc) => {
+  const rows = Array.from(doc.querySelectorAll('[data-testid="file-row"]'))
+    .filter(r => r.getAttribute('data-conflicted') === 'false' && r.getAttribute('data-status') !== '?');
+  const byRepo = {};
+  for (const r of rows) (byRepo[r.getAttribute('data-repo')] ??= []).push(r);
+  const repoId = Object.keys(byRepo).find(id => byRepo[id].length >= 2);
+  const mine = (byRepo[repoId] ?? []).slice(0, 2);
+  return { repoId, paths: mine.map(r => r.getAttribute('data-path')) };
+}`);
+check('found two tracked files to commit', picks.paths.length === 2);
+// IDEA checks changelist files by default; clear the list, then include just the picks
+await clickTestId(ev, 'changelist-check-default');
+check('list header clears all inclusion', await waitFor(() => ev(`(doc) =>
+  ${JSON.stringify(picks.paths)}.every(p => doc.querySelector('[data-testid="file-row"][data-repo="${picks.repoId}"][data-path="' + p + '"]')?.getAttribute('data-included') === 'false')`)));
+for (const p of picks.paths) {
+  await ctrlClick(`[data-testid="file-row"][data-repo="${picks.repoId}"][data-path="${p}"]`);
+  await sleep(400);
 }
+check('ctrl+click marks rows included', await ev(`(doc) =>
+  ${JSON.stringify(picks.paths)}.every(p => doc.querySelector('[data-testid="file-row"][data-repo="${picks.repoId}"][data-path="' + p + '"]')?.getAttribute('data-included') === 'true')`));
 
-const list0 = await targets();
-const workbench = list0.find((t) => t.type === 'page' && t.url.startsWith('vscode-file://'));
-const wb = new Cdp(await connect(workbench.webSocketDebuggerUrl));
-console.log('title:', await wb.eval('document.title'));
+await setInput(ev, '[data-testid="commit-message"]', 'drive: changelist commit');
+await sleep(300);
+check('commit enabled with selection + message', await ev(`(doc) => doc.querySelector('[data-testid="commit-button-main"]')?.disabled === false`));
+await shot(wb, 'drive1-before-commit');
+await clickTestId(ev, 'commit-button-main');
+const rowGone = (p) => ev(`(doc) => !doc.querySelector('[data-testid="file-row"][data-repo="${picks.repoId}"][data-path="${p}"]')`);
+check('committed files leave the tree', await waitFor(async () => (await rowGone(picks.paths[0])) && (await rowGone(picks.paths[1]))));
+check('message cleared on success', await waitFor(() => ev(`(doc) => (doc.querySelector('[data-testid="commit-message"]')?.value ?? 'x') === ''`)));
+check('unchecked files remain', await ev(`(doc) => doc.querySelectorAll('[data-testid="file-row"][data-repo="${picks.repoId}"]').length >= 1`));
+await shot(wb, 'drive2-after-commit');
 
-// ensure the Git Batch Commit view is open
-const already = await wb.eval(`!!Array.from(document.querySelectorAll('.title')).find(t => (t.textContent || '').includes('Git Batch Commit: Commit'))`);
-if (!already) {
-  console.log(await wb.eval(`(() => {
-    const btn = Array.from(document.querySelectorAll('.activitybar .action-item a'))
-      .find(a => (a.getAttribute('aria-label') || '').includes('Git Batch Commit'));
-    if (!btn) return 'NO ICON';
-    btn.click();
-    return 'view opened';
-  })()`));
-  await sleep(5000);
-}
+// the commit must appear at the top of the Log view
+await openView(wb, 'Log');
+const log = await panel('log-panel');
+await selectOption(log.ev, '[data-testid="log-repo"]', 'repoA');
+check('log HEAD is the new commit', await waitFor(() => log.ev(`(doc) => (doc.querySelector('[data-testid="log-entry"] .gbc-logmessage')?.textContent ?? '').includes('drive: changelist commit')`)));
+await shot(wb, 'drive3-log');
+log.cdp.ws.close();
+await openView(wb, 'Commit');
 
-const wt = (await targets()).find((t) => t.type === 'iframe' && t.url.startsWith('vscode-webview://'));
-if (!wt) throw new Error('no vscode-webview target');
-const wv = new Cdp(await connect(wt.webSocketDebuggerUrl));
-// panel app lives in the same-origin inner iframe of the webview host frame
-const inDoc = (body) => `(() => { const doc = document.querySelector('iframe').contentDocument; if (!doc || !doc.body) return 'NO INNER DOC'; return ((${body})(doc)); })()`;
-const text = await wv.eval(inDoc('(doc) => doc.body.innerText.slice(0, 260)'));
-console.log('panel text head:', JSON.stringify(text));
-await shot(wb, 'shot1-panel');
+// branch create + checkout back through the popup
+await clickTestId(ev, 'branch-widget');
+check('branch popup opens', await waitFor(() => ev(`(doc) => !!doc.querySelector('[data-testid="branch-popup"]')`)));
+await setInput(ev, '[data-testid="branch-new-name"]', 'drive-branch');
+await sleep(300);
+await clickTestId(ev, 'branch-new-create');
+check('widget shows created branch', await waitFor(() => ev(`(doc) => (doc.querySelector('[data-testid="branch-widget"]')?.innerText ?? '').includes('drive-branch')`)));
+await shot(wb, 'drive4-branch-created');
+await clickTestId(ev, 'branch-widget');
+await waitFor(() => ev(`(doc) => !!doc.querySelector('[data-testid="branch-popup"]')`));
+await ev(`(doc) => doc.querySelector('[data-testid="branch-row"][data-branch="main"] .gbc-branchrow-main')?.click()`);
+check('checkout back to main', await waitFor(() => ev(`(doc) => (doc.querySelector('[data-testid="branch-widget"]')?.innerText ?? '').includes('main')`)));
 
-// 1) toggle the first file checkbox (unstage n.txt / repoA first row)
-console.log(await wv.eval(inDoc(`(doc) => {
-  const cb = doc.querySelector('.gbc-filerow input[type=checkbox]');
-  if (!cb) return 'no checkbox';
-  cb.click();
-  return 'checkbox clicked: ' + cb.closest('.gbc-filerow').querySelector('.gbc-path').textContent;
-}`)));
-await sleep(2500);
-
-// 2) branch management overlay on repoA
-console.log(await wv.eval(inDoc(`(doc) => {
-  const row = Array.from(doc.querySelectorAll('.gbc-reporow')).find(r => r.textContent.includes('repoA'));
-  if (!row) return 'no repoA row';
-  row.querySelector('.gbc-branch').click();
-  return 'branch chip clicked';
-}`)));
-await sleep(2500);
-await shot(wb, 'shot2-branch');
-console.log('branch overlay:', JSON.stringify(await wv.eval(inDoc(`(doc) => doc.querySelector('.gbc-branchmgr')?.innerText.slice(0, 300) ?? 'missing'`))));
-
-// 2b) create a branch through the overlay
-console.log(await wv.eval(inDoc(`(doc) => {
-  const input = doc.querySelector('.gbc-branchcreate input');
-  if (!input) return 'no create input';
-  const set = Object.getOwnPropertyDescriptor(doc.defaultView.HTMLInputElement.prototype, 'value').set;
-  set.call(input, 'trial-branch');
-  input.dispatchEvent(new doc.defaultView.Event('input', { bubbles: true }));
-  return 'typed trial-branch';
-}`)));
-await sleep(400);
-console.log(await wv.eval(inDoc(`(doc) => {
-  const btn = Array.from(doc.querySelectorAll('.gbc-branchcreate button')).find(b => b.textContent.includes('创建并切换'));
-  if (!btn || btn.disabled) return 'create button disabled';
-  btn.click();
-  return 'create clicked';
-}`)));
-await sleep(3500);
-console.log('after create:', JSON.stringify(await wv.eval(inDoc(`(doc) => {
-  const row = Array.from(doc.querySelectorAll('.gbc-reporow')).find(r => r.textContent.includes('repoA'));
-  return row?.querySelector('.gbc-branch')?.textContent ?? 'no chip';
-}`))));
-await shot(wb, 'shot3-branchcreated');
-
-// 3) stash panel on repoA
-console.log(await wv.eval(inDoc(`(doc) => {
-  const row = Array.from(doc.querySelectorAll('.gbc-reporow')).find(r => r.textContent.includes('repoA'));
-  Array.from(row.querySelectorAll('.gbc-toolbar button')).find(b => b.textContent === 'Stash')?.click();
-  return 'stash clicked';
-}`)));
-await sleep(2500);
-await shot(wb, 'shot4-stash');
-console.log('stash overlay:', JSON.stringify(await wv.eval(inDoc(`(doc) => doc.querySelector('.gbc-stashoverlay')?.innerText.slice(0, 200) ?? 'missing'`))));
-
-// 4) commit log with grep filter on repoA
-console.log(await wv.eval(inDoc(`(doc) => {
-  const row = Array.from(doc.querySelectorAll('.gbc-reporow')).find(r => r.textContent.includes('repoA'));
-  Array.from(row.querySelectorAll('.gbc-toolbar button')).find(b => b.textContent === '日志')?.click();
-  return 'log clicked';
-}`)));
-await sleep(3000);
-console.log('log overlay:', JSON.stringify(await wv.eval(inDoc(`(doc) => doc.querySelector('.gbc-loglist')?.innerText.slice(0, 260) ?? 'missing'`))));
-console.log(await wv.eval(inDoc(`(doc) => {
-  const inputs = doc.querySelectorAll('.gbc-loginput');
-  if (!inputs[1]) return 'no grep input';
-  const set = Object.getOwnPropertyDescriptor(doc.defaultView.HTMLInputElement.prototype, 'value').set;
-  set.call(inputs[1], 'signoff');
-  inputs[1].dispatchEvent(new doc.defaultView.Event('input', { bubbles: true }));
-  return 'typed filter';
-}`)));
-await sleep(400);
-await wv.eval(inDoc(`(doc) => { Array.from(doc.querySelectorAll('.gbc-logfilters button')).pop().click(); }`));
-await sleep(2500);
-await shot(wb, 'shot5-log');
-console.log('filtered log:', JSON.stringify(await wv.eval(inDoc(`(doc) => doc.querySelector('.gbc-loglist')?.innerText.slice(0, 260) ?? 'missing'`))));
-
-// 5) click first log entry -> commit multi-diff in editor
-await wv.eval(inDoc(`(doc) => { doc.querySelector('.gbc-logitem')?.click(); }`));
-await sleep(5000);
-await shot(wb, 'shot6-commitdiff');
-
+cdp.ws.close();
 wb.ws.close();
-wv.ws.close();
+finish('DRIVE');

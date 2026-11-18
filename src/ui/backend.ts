@@ -2,39 +2,57 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
-import { acquireGitApi } from '../adapter/gitApi';
-import { mapLocalBranches } from '../adapter/branchRefs';
-import type { GitApi } from '../adapter/gitApiTypes';
+import { GitApiUnavailableError } from '../adapter/gitApi';
+import { mapLocalBranches, mapRemoteBranches } from '../adapter/branchRefs';
 import { asGitErrorLike } from '../adapter/gitApiTypes';
 import { RepoRegistry } from '../adapter/repoRegistry';
 import { BatchOrchestrator } from '../core/batchOrchestrator';
+import { defaultChangelistState } from '../core/changelistModel';
+import { CommitTranslator } from '../core/commitTranslator';
 import { InclusionModel } from '../core/inclusionModel';
-import { MiniRunner, validateBranchName } from '../core/miniRunner';
+import { MiniRunner, validateBranchName, validatePath } from '../core/miniRunner';
 import { OperationTracker } from '../core/operationTracker';
 import { StatusService } from '../core/statusService';
 import { TerminalBridge } from '../core/terminalBridge';
+import { CHECK_AVAILABILITY, detectCapabilities } from '../kernel/capabilities';
+import type { GitKernel } from '../kernel/types';
+import { createVscodeGitKernel } from '../kernel/vscodeGitKernel';
 import { makeError, mapGitErrorCode } from '../protocol/errors';
 import type { ProtocolError } from '../protocol/errors';
-import type { BranchRef, InitResult, LogPage, PanelSettings } from '../protocol/messages';
-import type { PanelState } from '../protocol/models';
-import { DiffService } from '../services/diffService';
+import { normalizeCommitRequest } from '../protocol/messages';
+import type { BranchRef, EventMap, InitResult, LogPage, PanelSettings } from '../protocol/messages';
+import type { ChangelistFileRef, ChangelistState, CommitOptionsState, PanelState, UnavailableReason } from '../protocol/models';
+import { ChangelistService } from '../services/changelistService';
+import type { ChangelistStorage } from '../services/changelistService';
+import { ChecksService } from '../services/checksService';
+import { DiffDataService } from '../services/diffDataService';
+import { guardWorktreeFile } from '../services/diffData';
 import { HunkService } from '../services/hunkService';
+import { OptionsService } from '../services/optionsService';
 import { ShelfService } from '../services/shelfService';
 import { SequencerService } from '../services/sequencerService';
 import { StashService } from '../services/stashService';
 import { Diagnostics } from './diagnostics';
+import { DiffViewProvider } from './diffViewProvider';
+import { EditorActions } from './editorActions';
+import { EditorBridge } from './editorBridge';
 import { MessageGateway } from './messageGateway';
 
 interface Services {
-  api: GitApi;
+  kernel: GitKernel;
   registry: RepoRegistry;
   status: StatusService;
   inclusion: InclusionModel;
+  translator: CommitTranslator;
+  changelists: ChangelistService;
+  options: OptionsService;
   orchestrator: BatchOrchestrator;
   tracker: OperationTracker;
   terminal: TerminalBridge;
-  diff: DiffService;
+  editor: EditorBridge;
   hunk: HunkService;
+  diffData: DiffDataService;
+  checks: ChecksService;
   stash: StashService;
   shelf: ShelfService;
   sequencer: SequencerService;
@@ -45,7 +63,8 @@ export class Backend implements vscode.Disposable {
   private services: Services | undefined;
   private initPromise: Promise<void> | undefined;
   private panelState: PanelState = 'initializing';
-  private readonly gateways = new Map<MessageGateway, vscode.Disposable[]>();
+  private unavailableReason: UnavailableReason | undefined;
+  private readonly gateways = new Map<MessageGateway, (() => void)[]>();
   private readonly disposables: vscode.Disposable[] = [];
   private extensionVersion = '0.0.1';
   readonly diagnostics = new Diagnostics();
@@ -76,35 +95,65 @@ export class Backend implements vscode.Disposable {
 
   private async doInit(): Promise<void> {
     try {
-      const api = await acquireGitApi();
-      const registry = new RepoRegistry(api);
+      const mini = new MiniRunner(() => vscode.workspace.getConfiguration('git').get<string>('path') || 'git');
+      const kernel = await createVscodeGitKernel(mini);
+      const registry = new RepoRegistry(kernel);
       const settings = readSettings();
       const status = new StatusService(registry, settings.refreshDebounceMs);
       const inclusion = new InclusionModel(registry);
       const tracker = new OperationTracker();
-      const orchestrator = new BatchOrchestrator(registry, inclusion, tracker, () => ({
-        stopOnFirstRepoError: readSettings().stopOnFirstRepoError,
-      }));
-      const terminal = new TerminalBridge(registry);
-      const diff = new DiffService(api, registry);
-      const mini = new MiniRunner(() => vscode.workspace.getConfiguration('git').get<string>('path') || 'git');
       const hunk = new HunkService(registry, mini);
+      const translator = new CommitTranslator(registry, inclusion, hunk, mini);
+      const changelists = new ChangelistService(status, inclusion, hunk, this.changelistStorage(), () => {
+        const current = readSettings();
+        return { defaultSelectAll: current.defaultSelectAll, selectUntracked: current.selectUntracked };
+      });
+      const options = new OptionsService({
+        load: () => this.context.workspaceState.get<Partial<CommitOptionsState>>('gitBatchCommit.commitOptions'),
+        save: async (next) => {
+          await this.context.workspaceState.update('gitBatchCommit.commitOptions', next);
+        },
+      });
+      const orchestrator = new BatchOrchestrator(
+        registry,
+        inclusion,
+        translator,
+        tracker,
+        () => ({
+          stopOnFirstRepoError: readSettings().stopOnFirstRepoError,
+          confirmIndexExclusion: (_repoId, paths) => this.confirmIndexExclusion(paths),
+          onCommitted: (repoId, req) => {
+            const entries = req.expectedIncluded?.[repoId];
+            if (entries) {
+              changelists.removeCommitted(repoId, entries);
+            }
+            status.refresh(repoId);
+          },
+        }),
+        (name, ms) => this.recordMetric(name, ms),
+      );
+      const terminal = new TerminalBridge(registry);
+      const editor = new EditorBridge(registry);
+      const diffData = new DiffDataService(registry, mini);
+      const checks = new ChecksService(registry, new EditorActions());
       const stash = new StashService(registry, mini);
       const storageRoot = (this.context.storageUri ?? this.context.globalStorageUri).fsPath;
       const shelf = new ShelfService(registry, mini, path.join(storageRoot, 'shelf'));
       const sequencer = new SequencerService(registry, mini);
-      this.services = { api, registry, status, inclusion, orchestrator, tracker, terminal, diff, hunk, stash, shelf, sequencer, mini };
+      this.services = { kernel, registry, status, inclusion, translator, changelists, options, orchestrator, tracker, terminal, editor, hunk, diffData, checks, stash, shelf, sequencer, mini };
       this.panelState = 'ready';
-      this.output.appendLine('内置 Git API 绑定成功，仓库数: ' + registry.all().length);
+      this.unavailableReason = undefined;
+      this.output.appendLine(`Git kernel bound; repositories: ${registry.all().length}`);
       for (const gateway of this.gateways.keys()) {
         this.wireEvents(gateway);
         gateway.emit('panel.state', { panelState: 'ready' });
       }
     } catch (err) {
-      this.panelState = 'git-extension-unavailable';
-      this.output.appendLine('内置 Git API 不可用: ' + String(err));
+      this.panelState = 'backend-unavailable';
+      this.unavailableReason = err instanceof GitApiUnavailableError ? err.reason : 'extension-disabled';
+      this.output.appendLine('Git kernel unavailable: ' + String(err));
       for (const gateway of this.gateways.keys()) {
-        gateway.emit('panel.state', { panelState: 'git-extension-unavailable' });
+        gateway.emit('panel.state', { panelState: 'backend-unavailable', unavailableReason: this.unavailableReason });
       }
     }
   }
@@ -112,18 +161,72 @@ export class Backend implements vscode.Disposable {
   private async ready(): Promise<Services> {
     await this.init();
     if (!this.services) {
-      throw makeError('GIT_EXTENSION_UNAVAILABLE', '内置 Git 扩展不可用，请启用后重试', ['enableGitExtension', 'openGitSettings']);
+      throw makeError('GIT_EXTENSION_UNAVAILABLE', 'The git backend is unavailable; enable it and retry', ['enableGitExtension', 'openGitSettings']);
     }
     return this.services;
+  }
+
+  private changelistStorage(): ChangelistStorage {
+    const key = 'gitBatchCommit.changelists';
+    return {
+      load: () => {
+        const raw = this.context.workspaceState.get<ChangelistState>(key);
+        return raw && raw.version === 1 && Array.isArray(raw.lists) && raw.lists.length > 0 ? raw : undefined;
+      },
+      save: async (state) => {
+        await this.context.workspaceState.update(key, state);
+      },
+      backup: async (state) => {
+        await this.context.workspaceState.update(`${key}.backup`, state);
+      },
+    };
+  }
+
+  private exclusionConfirmedThisSession = false;
+  private diffView: DiffViewProvider | undefined;
+
+  /** Files the next commit would include, for checks scoped to the commit. */
+  private includedRefs(s: Services, repoIds: string[]): ChangelistFileRef[] {
+    const wanted = new Set(repoIds);
+    const state = s.changelists.get();
+    if (state.mode === 'changelist') {
+      return [...state.lists.flatMap((l) => l.checked), ...state.unversionedChecked].filter((r) => wanted.has(r.repoId));
+    }
+    const refs: ChangelistFileRef[] = [];
+    for (const repoId of repoIds) {
+      for (const c of s.status.snapshot(repoId)?.changes ?? []) {
+        if (c.staged && !c.conflicted) {
+          refs.push({ repoId, path: c.path });
+        }
+      }
+    }
+    return refs;
+  }
+
+  private async confirmIndexExclusion(paths: string[]): Promise<boolean> {
+    if (this.exclusionConfirmedThisSession) {
+      return true;
+    }
+    const preview = paths.slice(0, 5).join(', ') + (paths.length > 5 ? `, … (${paths.length} files)` : '');
+    const choice = await vscode.window.showWarningMessage(
+      `The index contains staged files that are not checked: ${preview}. Unstage them and commit only the checked files?`,
+      { modal: true },
+      'Unstage and Commit',
+    );
+    if (choice === 'Unstage and Commit') {
+      this.exclusionConfirmedThisSession = true;
+      return true;
+    }
+    return false;
   }
 
   refresh(): void {
     this.services?.status.refresh();
   }
 
-  requestCommit(): void {
+  dispatchCommand(command: EventMap['ui.command']['command']): void {
     for (const gateway of this.gateways.keys()) {
-      gateway.emit('ui.command', { command: 'commit' });
+      gateway.emit('ui.command', { command });
     }
   }
 
@@ -134,8 +237,8 @@ export class Backend implements vscode.Disposable {
     }
     this.registerHandlers(gateway);
     return new vscode.Disposable(() => {
-      for (const d of this.gateways.get(gateway) ?? []) {
-        d.dispose();
+      for (const unsub of this.gateways.get(gateway) ?? []) {
+        unsub();
       }
       this.gateways.delete(gateway);
     });
@@ -154,6 +257,9 @@ export class Backend implements vscode.Disposable {
       s.status.onStatusChanged((status) => gateway.emit('status.changed', { status })),
       s.registry.onDidClose((repoId) => gateway.emit('repo.closed', { repoId })),
       s.tracker.onProgress((operation) => gateway.emit('operation.progress', { operation })),
+      s.changelists.onChanged((state) => gateway.emit('changelists.changed', { state })),
+      s.changelists.onModeChanged((mode) => gateway.emit('mode.changed', { mode })),
+      s.options.onChanged((options) => gateway.emit('options.changed', { options })),
     );
   }
 
@@ -162,9 +268,13 @@ export class Backend implements vscode.Disposable {
       await this.init();
       return {
         panelState: this.panelState,
+        unavailableReason: this.unavailableReason,
         repos: this.services?.status.all() ?? [],
         settings: readSettings(),
         extensionVersion: this.extensionVersion,
+        capabilities: this.services?.kernel.capabilities ?? detectCapabilities([]),
+        checks: CHECK_AVAILABILITY,
+        changelists: this.services?.changelists.get() ?? defaultChangelistState(),
       };
     });
     gateway.register('status.get', async (params) => {
@@ -174,6 +284,10 @@ export class Backend implements vscode.Disposable {
         return snapshot ? [snapshot] : [];
       }
       return s.status.all();
+    });
+    gateway.register('status.refresh', async (params) => {
+      const s = await this.ready();
+      return s.status.rescan(params?.repoId);
     });
     gateway.register('index.stage', async (params) => {
       const s = await this.ready();
@@ -191,17 +305,86 @@ export class Backend implements vscode.Disposable {
       const s = await this.ready();
       await s.inclusion.unstageAll(params.repoId);
     });
+    gateway.register('changelist.list', async () => {
+      const s = await this.ready();
+      return s.changelists.get();
+    });
+    gateway.register('changelist.create', async (params) => {
+      const s = await this.ready();
+      return s.changelists.create(params.name, params.comment);
+    });
+    gateway.register('changelist.rename', async (params) => {
+      const s = await this.ready();
+      s.changelists.rename(params.id, params.name);
+    });
+    gateway.register('changelist.remove', async (params) => {
+      const s = await this.ready();
+      s.changelists.remove(params.id);
+    });
+    gateway.register('changelist.setActive', async (params) => {
+      const s = await this.ready();
+      s.changelists.setActive(params.id);
+    });
+    gateway.register('changelist.setComment', async (params) => {
+      const s = await this.ready();
+      s.changelists.setComment(params.id, params.comment);
+    });
+    gateway.register('changelist.move', async (params) => {
+      const s = await this.ready();
+      s.changelists.move(params.refs, params.targetId, params.force ?? false);
+    });
+    gateway.register('mode.get', async () => {
+      const s = await this.ready();
+      return { mode: s.changelists.get().mode };
+    });
+    gateway.register('mode.previewMigration', async (params) => {
+      const s = await this.ready();
+      return s.changelists.previewMigration(params.mode);
+    });
+    gateway.register('mode.set', async (params) => {
+      const s = await this.ready();
+      await s.changelists.setMode(params.mode, params.confirm);
+    });
+    gateway.register('inclusion.set', async (params) => {
+      const s = await this.ready();
+      const t = Date.now();
+      s.changelists.setIncluded(params.refs, params.included);
+      this.recordMetric('inclusion.set', Date.now() - t);
+    });
+    gateway.register('inclusion.setPartial', async (params) => {
+      const s = await this.ready();
+      s.changelists.setPartial(params.repoId, params.path, params.selection);
+    });
+    gateway.register('index.stagePartial', async (params) => {
+      const s = await this.ready();
+      await s.hunk.stagePartial(params.repoId, params.path, params.selection);
+      s.status.refresh();
+    });
+    gateway.register('index.unstagePartial', async (params) => {
+      const s = await this.ready();
+      await s.hunk.unstagePartial(params.repoId, params.path, params.selection);
+      s.status.refresh();
+    });
+    gateway.register('options.get', async () => {
+      const s = await this.ready();
+      return s.options.get();
+    });
+    gateway.register('options.set', async (params) => {
+      const s = await this.ready();
+      s.options.set(params);
+    });
     gateway.register('commit.run', async (params) => {
       const s = await this.ready();
-      const results = await s.orchestrator.run(params);
-      if (params.message.trim() && results.some((r) => r.ok)) {
-        this.recordHistory(params.message);
+      const req = normalizeCommitRequest(params);
+      const results = await s.orchestrator.run(req);
+      if (req.message.trim() && results.some((r) => r.ok)) {
+        this.recordHistory(req.message);
       }
       return results;
     });
     gateway.register('commit.show', async (params) => {
       const s = await this.ready();
-      await s.diff.openCommit(params.repoId, params.oid);
+      await s.editor.openCommit(params.repoId, params.oid);
     });
     gateway.register('commit.undo', async (params) => {
       const s = await this.ready();
@@ -219,7 +402,29 @@ export class Backend implements vscode.Disposable {
     });
     gateway.register('diff.open', async (params) => {
       const s = await this.ready();
-      await s.diff.open(params.repoId, params.path, params.side, params.force ?? false);
+      const desc = s.registry.descriptor(params.repoId);
+      if (!desc) {
+        throw makeError('NO_REPOSITORY', `Repository not found: ${params.repoId}`);
+      }
+      if (!validatePath(params.path)) {
+        throw makeError('GENERIC', 'Invalid file path');
+      }
+      if (params.side !== 'staged' && !params.force) {
+        await guardWorktreeFile(desc.rootPath, params.repoId, params.path, params.side, diffThresholdKB());
+      }
+      this.diffView ??= new DiffViewProvider(this.context.extensionUri, this, (line) => this.output.appendLine(line));
+      this.diffView.open(params.repoId, params.path, params.side, params.force ?? false);
+    });
+    gateway.register('diff.data', async (params) => {
+      const s = await this.ready();
+      return s.diffData.get(params.repoId, params.path, params.side, params.force ?? false, diffThresholdKB());
+    });
+    gateway.register('checks.run', async (params) => {
+      const s = await this.ready();
+      const refs = params.refs ?? this.includedRefs(s, params.repoIds);
+      return s.checks.run(params.repoIds, params.checkIds, refs, (checkId, status) =>
+        gateway.emit('checks.progress', { checkId, status }),
+      );
     });
     gateway.register('hunk.list', async (params) => {
       const s = await this.ready();
@@ -281,16 +486,16 @@ export class Backend implements vscode.Disposable {
       const s = await this.ready();
       const repo = s.registry.get(params.repoId);
       if (!repo) {
-        throw makeError('NO_REPOSITORY', `仓库不存在: ${params.repoId}`);
+        throw makeError('NO_REPOSITORY', `Repository not found: ${params.repoId}`);
       }
-      const refs = await repo.getBranches({ remote: false });
-      return mapLocalBranches(refs, repo.state.HEAD?.name);
+      const [local, remote] = await Promise.all([repo.getBranches({ remote: false }), repo.getBranches({ remote: true })]);
+      return [...mapLocalBranches(local, repo.state.HEAD?.name), ...mapRemoteBranches(remote)];
     });
     gateway.register('branch.checkout', async (params) => {
       const s = await this.ready();
       const repo = s.registry.get(params.repoId);
       if (!repo) {
-        throw makeError('NO_REPOSITORY', `仓库不存在: ${params.repoId}`);
+        throw makeError('NO_REPOSITORY', `Repository not found: ${params.repoId}`);
       }
       await repo.checkout(params.name);
     });
@@ -298,10 +503,10 @@ export class Backend implements vscode.Disposable {
       const s = await this.ready();
       const repo = s.registry.get(params.repoId);
       if (!repo) {
-        throw makeError('NO_REPOSITORY', `仓库不存在: ${params.repoId}`);
+        throw makeError('NO_REPOSITORY', `Repository not found: ${params.repoId}`);
       }
       if (!validateBranchName(params.name)) {
-        throw makeError('GENERIC', '分支名非法');
+        throw makeError('GENERIC', 'Invalid branch name');
       }
       await repo.createBranch(params.name, params.checkout ?? true, params.ref);
       s.status.refresh();
@@ -310,10 +515,10 @@ export class Backend implements vscode.Disposable {
       const s = await this.ready();
       const repo = s.registry.get(params.repoId);
       if (!repo) {
-        throw makeError('NO_REPOSITORY', `仓库不存在: ${params.repoId}`);
+        throw makeError('NO_REPOSITORY', `Repository not found: ${params.repoId}`);
       }
       if (repo.state.HEAD?.name === params.name) {
-        throw makeError('GENERIC', '不能删除当前所在分支');
+        throw makeError('GENERIC', 'Cannot delete the current branch');
       }
       try {
         // force=false: git refuses to delete unmerged branches (safe default)
@@ -327,7 +532,7 @@ export class Backend implements vscode.Disposable {
       const s = await this.ready();
       const desc = s.registry.descriptor(params.repoId);
       if (!desc) {
-        throw makeError('NO_REPOSITORY', `仓库不存在: ${params.repoId}`);
+        throw makeError('NO_REPOSITORY', `Repository not found: ${params.repoId}`);
       }
       await s.mini.run(desc.rootPath, { cmd: 'branch-rename', from: params.from, to: params.to });
       s.status.refresh();
@@ -335,18 +540,18 @@ export class Backend implements vscode.Disposable {
     gateway.register('branch.compare', async (params) => {
       const s = await this.ready();
       if (!validateBranchName(params.name)) {
-        throw makeError('GENERIC', '分支名非法');
+        throw makeError('GENERIC', 'Invalid branch name');
       }
-      await s.diff.openBranchCompare(params.repoId, params.name);
+      await s.editor.openBranchCompare(params.repoId, params.name);
     });
     gateway.register('repo.pull', async (params) => {
       const s = await this.ready();
       const repo = s.registry.get(params.repoId);
       if (!repo) {
-        throw makeError('NO_REPOSITORY', `仓库不存在: ${params.repoId}`);
+        throw makeError('NO_REPOSITORY', `Repository not found: ${params.repoId}`);
       }
       if (!repo.pull) {
-        throw makeError('GENERIC', '当前内置 Git API 版本不支持 pull');
+        throw makeError('CAPABILITY_UNAVAILABLE', 'The active git kernel does not support pull');
       }
       s.tracker.start(params.repoId, 'pull');
       try {
@@ -363,11 +568,11 @@ export class Backend implements vscode.Disposable {
       const s = await this.ready();
       const repo = s.registry.get(params.repoId);
       if (!repo) {
-        throw makeError('NO_REPOSITORY', `仓库不存在: ${params.repoId}`);
+        throw makeError('NO_REPOSITORY', `Repository not found: ${params.repoId}`);
       }
       const head = repo.state.HEAD;
       if (!head?.name) {
-        throw makeError('GENERIC', 'detached HEAD 无法推送，请切换到分支');
+        throw makeError('GENERIC', 'Cannot push from detached HEAD; check out a branch first');
       }
       s.tracker.start(params.repoId, 'push');
       s.tracker.update(params.repoId, 'pushing');
@@ -385,10 +590,10 @@ export class Backend implements vscode.Disposable {
       const s = await this.ready();
       const repo = s.registry.get(params.repoId);
       if (!repo) {
-        throw makeError('NO_REPOSITORY', `仓库不存在: ${params.repoId}`);
+        throw makeError('NO_REPOSITORY', `Repository not found: ${params.repoId}`);
       }
       if (!repo.log) {
-        throw makeError('GENERIC', '当前内置 Git API 版本不支持 log');
+        throw makeError('CAPABILITY_UNAVAILABLE', 'The active git kernel does not support log');
       }
       const configured = vscode.workspace.getConfiguration('gitBatchCommit.log').get<number>('pageSize', 50);
       const pageSize = Math.min(500, Math.max(10, Math.floor(configured) || 50));
@@ -423,11 +628,11 @@ export class Backend implements vscode.Disposable {
       const s = await this.ready();
       const repo = s.registry.get(params.repoId);
       if (!repo) {
-        throw makeError('NO_REPOSITORY', `仓库不存在: ${params.repoId}`);
+        throw makeError('NO_REPOSITORY', `Repository not found: ${params.repoId}`);
       }
       if (repo.state.rebaseCommit) {
         if (!repo.rebaseAbort) {
-          throw makeError('GENERIC', '当前内置 Git API 版本不支持 rebase --abort');
+          throw makeError('CAPABILITY_UNAVAILABLE', 'The active git kernel does not support rebase --abort');
         }
         await repo.rebaseAbort();
       } else if (repo.state.mergeChanges.length > 0 && repo.mergeAbort) {
@@ -446,7 +651,7 @@ export class Backend implements vscode.Disposable {
       const s = await this.ready();
       const desc = s.registry.descriptor(params.repoId);
       if (!desc) {
-        throw makeError('NO_REPOSITORY', `仓库不存在: ${params.repoId}`);
+        throw makeError('NO_REPOSITORY', `Repository not found: ${params.repoId}`);
       }
       const fileUri = vscode.Uri.file(path.join(desc.rootPath, params.path));
       const commands = await vscode.commands.getCommands(true);
@@ -458,7 +663,82 @@ export class Backend implements vscode.Disposable {
           // merge editor unavailable for this file: fall back to plain diff
         }
       }
-      await s.diff.open(params.repoId, params.path, 'worktree', true);
+      this.diffView ??= new DiffViewProvider(this.context.extensionUri, this, (line) => this.output.appendLine(line));
+      this.diffView.open(params.repoId, params.path, 'worktree', true);
+    });
+    gateway.register('files.rollback', async (params) => {
+      const s = await this.ready();
+      const desc = s.registry.descriptor(params.repoId);
+      if (!desc) {
+        throw makeError('NO_REPOSITORY', `Repository not found: ${params.repoId}`);
+      }
+      const untracked = new Set(
+        (s.status.snapshot(params.repoId)?.changes ?? []).filter((c) => c.kind === 'untracked').map((c) => c.path),
+      );
+      const tracked: string[] = [];
+      const local: string[] = [];
+      for (const p of params.paths) {
+        if (!validatePath(p)) {
+          throw makeError('GENERIC', 'Invalid file path');
+        }
+        (untracked.has(p) ? local : tracked).push(p);
+      }
+      for (let i = 0; i < tracked.length; i += 500) {
+        await s.mini.run(desc.rootPath, { cmd: 'restore-head', paths: tracked.slice(i, i + 500) });
+      }
+      for (const p of local) {
+        await fs.promises.rm(path.join(desc.rootPath, p), { force: true });
+      }
+      s.status.refresh(params.repoId);
+    });
+    gateway.register('files.delete', async (params) => {
+      const s = await this.ready();
+      const desc = s.registry.descriptor(params.repoId);
+      if (!desc) {
+        throw makeError('NO_REPOSITORY', `Repository not found: ${params.repoId}`);
+      }
+      for (const p of params.paths) {
+        if (!validatePath(p)) {
+          throw makeError('GENERIC', 'Invalid file path');
+        }
+        await fs.promises.rm(path.join(desc.rootPath, p), { force: true });
+      }
+      s.status.refresh(params.repoId);
+    });
+    gateway.register('files.open', async (params) => {
+      const s = await this.ready();
+      const desc = s.registry.descriptor(params.repoId);
+      if (!desc) {
+        throw makeError('NO_REPOSITORY', `Repository not found: ${params.repoId}`);
+      }
+      if (!validatePath(params.path)) {
+        throw makeError('GENERIC', 'Invalid file path');
+      }
+      await vscode.window.showTextDocument(vscode.Uri.file(path.join(desc.rootPath, params.path)));
+    });
+    gateway.register('files.reveal', async (params) => {
+      const s = await this.ready();
+      const desc = s.registry.descriptor(params.repoId);
+      if (!desc) {
+        throw makeError('NO_REPOSITORY', `Repository not found: ${params.repoId}`);
+      }
+      if (!validatePath(params.path)) {
+        throw makeError('GENERIC', 'Invalid file path');
+      }
+      await vscode.commands.executeCommand('revealFileInOS', vscode.Uri.file(path.join(desc.rootPath, params.path)));
+    });
+    gateway.register('commit.isPushed', async (params) => {
+      const s = await this.ready();
+      const desc = s.registry.descriptor(params.repoId);
+      const oid = s.registry.get(params.repoId)?.state.HEAD?.commit;
+      if (!desc || !oid) {
+        return { pushed: false };
+      }
+      const remotes = (await s.mini.run(desc.rootPath, { cmd: 'remote-contains', oid })).stdout.toString('utf8').trim();
+      return { pushed: remotes.length > 0 };
+    });
+    gateway.register('ui.reloadWindow', async () => {
+      await vscode.commands.executeCommand('workbench.action.reloadWindow');
     });
     gateway.register('ui.showGitOutput', async () => {
       await vscode.commands.executeCommand('git.showOutput');
@@ -474,13 +754,17 @@ export class Backend implements vscode.Disposable {
       await vscode.commands.executeCommand('setContext', 'gitBatchCommit.panelFocused', params.focused === true);
     });
     gateway.register('ui.metric', async (params) => {
-      if (!/^[a-zA-Z0-9._-]{1,64}$/.test(params.name) || !Number.isFinite(params.ms) || params.ms < 0) {
-        return;
-      }
-      const line = `[metric] ${params.name}=${Math.round(params.ms)}ms`;
-      this.output.appendLine(line);
-      this.diagnostics.record(line);
+      this.recordMetric(params.name, params.ms);
     });
+  }
+
+  private recordMetric(name: string, ms: number): void {
+    if (!/^[a-zA-Z0-9._-]{1,64}$/.test(name) || !Number.isFinite(ms) || ms < 0) {
+      return;
+    }
+    const line = `[metric] ${name}=${Math.round(ms)}ms`;
+    this.output.appendLine(line);
+    this.diagnostics.record(line);
   }
 
   private static readonly historyKey = 'gitBatchCommit.messageHistory';
@@ -511,20 +795,24 @@ export class Backend implements vscode.Disposable {
       ...this.diagnostics.snapshot(),
     ];
     await vscode.env.clipboard.writeText(lines.join('\n'));
-    void vscode.window.showInformationMessage('诊断信息已复制到剪贴板（不含文件内容与凭据）。');
+    void vscode.window.showInformationMessage('Diagnostics copied to clipboard (no file contents or credentials).');
   }
 
   dispose(): void {
+    this.diffView?.dispose();
     for (const [gateway, subs] of this.gateways) {
-      for (const d of subs) {
-        d.dispose();
+      for (const unsub of subs) {
+        unsub();
       }
       gateway.dispose();
     }
     this.gateways.clear();
+    this.services?.changelists.dispose();
+    this.services?.options.dispose();
     this.services?.status.dispose();
     this.services?.registry.dispose();
     this.services?.tracker.dispose();
+    this.services?.kernel.dispose();
     for (const d of this.disposables) {
       d.dispose();
     }
@@ -540,6 +828,10 @@ export function readSettings(): PanelSettings {
     stopOnFirstRepoError: config.get<boolean>('stopOnFirstRepoError', true),
     refreshDebounceMs: config.get<number>('refreshDebounceMs', 250),
   };
+}
+
+function diffThresholdKB(): number {
+  return vscode.workspace.getConfiguration('gitBatchCommit.diff').get<number>('largeFileThresholdKB', 2048);
 }
 
 const TEMPLATE_CAP = 64 * 1024;
