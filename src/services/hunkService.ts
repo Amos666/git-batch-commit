@@ -78,6 +78,15 @@ export class HunkService {
       const filtered = transform(hunks);
       const next = applyHunks(base, filtered, new Set(filtered.map((h) => h.id)));
       if (next === base) {
+        // Mode-only change: the patch carries no content hunks, but the exec
+        // bit still has to reach the index or the file stays "modified" forever.
+        if (!untracked && hunks.length === 0) {
+          const im = await this.indexMode(rootPath, relPath);
+          const wm = await this.worktreeMode(rootPath, relPath);
+          if (im !== '120000' && im !== wm) {
+            await this.writeIndexBlob(repo, rootPath, relPath, wm, next);
+          }
+        }
         return;
       }
       const mode = untracked ? await this.worktreeMode(rootPath, relPath) : await this.indexMode(rootPath, relPath);

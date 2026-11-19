@@ -181,6 +181,8 @@ export const branchSlice: Slice = (set, get, ctx) => ({
         previewLoading: true,
         results: {},
         tags: false,
+        filesLoading: false,
+        filesCache: {},
       },
       dialogBusy: false,
       dialogError: undefined,
@@ -288,7 +290,59 @@ export const branchSlice: Slice = (set, get, ctx) => ({
       set({ dialogBusy: false, dialogError: (err as ProtocolError).message, lastError: err as ProtocolError });
     }
   },
+
+  selectPushFiles: (repoId, hash) => {
+    const dialog = get().dialog;
+    if (dialog?.kind !== 'push') {
+      return;
+    }
+    const key = pushFilesKey(repoId, hash);
+    const cached = dialog.filesCache[key];
+    const selected = { repoId, hash };
+    if (cached) {
+      set({ dialog: { ...dialog, selected, files: cached, filesLoading: false, filesError: undefined } });
+      return;
+    }
+    set({ dialog: { ...dialog, selected, files: undefined, filesLoading: true, filesError: undefined } });
+    void (async () => {
+      try {
+        const result = await ctx.request('push.commitFiles', { repoId, hash });
+        const cur = get().dialog;
+        if (cur?.kind !== 'push' || pushFilesKey(cur.selected?.repoId ?? '', cur.selected?.hash) !== key) {
+          return;
+        }
+        set({ dialog: { ...cur, files: result, filesLoading: false, filesCache: { ...cur.filesCache, [key]: result } } });
+      } catch (err) {
+        const cur = get().dialog;
+        if (cur?.kind !== 'push' || pushFilesKey(cur.selected?.repoId ?? '', cur.selected?.hash) !== key) {
+          return;
+        }
+        set({ dialog: { ...cur, filesLoading: false, filesError: (err as ProtocolError).message } });
+      }
+    })();
+  },
+
+  openPushFileDiff: async (file) => {
+    const dialog = get().dialog;
+    if (dialog?.kind !== 'push' || !dialog.selected || !dialog.files) {
+      return;
+    }
+    try {
+      await ctx.request('push.fileDiff', {
+        repoId: dialog.selected.repoId,
+        file,
+        from: dialog.files.from,
+        to: dialog.files.to,
+      });
+    } catch (err) {
+      set({ dialogError: (err as ProtocolError).message });
+    }
+  },
 });
+
+function pushFilesKey(repoId: string, hash: string | undefined): string {
+  return `${repoId}:${hash ?? '@'}`;
+}
 
 type PushDialog = Extract<Dialog, { kind: 'push' }>;
 

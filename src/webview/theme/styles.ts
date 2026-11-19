@@ -197,6 +197,32 @@ export const STYLES = `
 .gbc-pusherror span { flex: 1; min-width: 0; }
 .gbc-pushsummary { padding: 4px 0 0; color: var(--gbc-fg-muted); font-size: var(--gbc-font-size-small); }
 .gbc-pushtags { display: inline-flex; align-items: center; gap: 6px; font-size: var(--gbc-font-size-small); color: var(--gbc-fg-muted); }
+.gbc-dialog-wide { width: min(920px, calc(100vw - 32px)); }
+.gbc-pushpanes { display: flex; align-items: stretch; gap: 10px; min-height: 240px; }
+.gbc-pushpanes .gbc-pushlist { flex: 1 1 50%; min-width: 0; max-height: 380px; }
+.gbc-pushfiles { flex: 1 1 50%; min-width: 0; border-left: 1px solid var(--gbc-border); padding-left: 10px; max-height: 380px; overflow: auto; }
+.gbc-pushfiles-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 2px 0 4px; margin-bottom: 4px; font-size: var(--gbc-font-size-small); color: var(--gbc-fg-muted); border-bottom: 1px solid var(--gbc-border); }
+.gbc-pushfiles-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gbc-pushfiles-count { flex: none; }
+.gbc-pushfilelist { list-style: none; margin: 0; padding: 0; }
+.gbc-pushfile { display: flex; align-items: center; gap: 6px; padding: 1px 4px; font-size: var(--gbc-font-size-small); border-radius: 3px; }
+.gbc-pushfile:hover { background: var(--gbc-hover); }
+.gbc-pushfile:focus-visible { outline: 1px solid var(--gbc-link); outline-offset: -1px; }
+.gbc-pushfile-status { flex: none; width: 12px; text-align: center; font-family: var(--vscode-editor-font-family, monospace); }
+.gbc-pushfile-A { color: var(--gbc-added); }
+.gbc-pushfile-M, .gbc-pushfile-T { color: var(--gbc-modified); }
+.gbc-pushfile-D { color: var(--gbc-deleted); }
+.gbc-pushfile-R, .gbc-pushfile-C { color: var(--gbc-renamed); }
+.gbc-pushfile-path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gbc-pushfile-orig { flex: none; max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--gbc-fg-muted); }
+.gbc-pushsel-on, .gbc-pushsel-on:hover { background: var(--gbc-selection); color: var(--gbc-selection-fg); }
+.gbc-pushcommit { cursor: pointer; border-radius: 3px; }
+.gbc-pushcommit:hover { background: var(--gbc-hover); }
+button.gbc-repo-name { background: none; border: none; color: inherit; font: inherit; padding: 0 2px; cursor: pointer; border-radius: 3px; }
+@media (max-width: 700px) {
+  .gbc-pushpanes { flex-direction: column; }
+  .gbc-pushfiles { border-left: none; padding-left: 0; border-top: 1px solid var(--gbc-border); padding-top: 6px; }
+}
 .gbc-checkreport { list-style: none; margin: 4px 0; padding: 0; }
 .gbc-checkreport li { display: flex; align-items: center; gap: 8px; padding: 3px 0; flex-wrap: wrap; }
 .gbc-checkstatus { font-size: var(--gbc-font-size-small); border-radius: 3px; padding: 0 6px; }

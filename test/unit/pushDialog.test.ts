@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { PushPreviewEntry, PushRunRequest, PushRunResult, RepoStatus } from '../../src/protocol/models';
+import type { PushCommitFile, PushFilesResult, PushPreviewEntry, PushRunRequest, PushRunResult, RepoStatus } from '../../src/protocol/models';
 import { createStore } from '../../src/webview/state/createStore';
 import type { PanelStoreInstance } from '../../src/webview/state/createStore';
 import { createMemoryTransport } from '../../src/webview/transport/memoryTransport';
@@ -36,12 +36,24 @@ describe('Push dialog (IDEA semantics)', () => {
   let instance: PanelStoreInstance;
   let transport: MemoryTransport;
   const pushRun = vi.fn<(params: PushRunRequest) => Promise<PushRunResult[]>>();
+  const pushCommitFiles = vi.fn<(params: { repoId: string; hash?: string }) => Promise<PushFilesResult>>();
+  const pushFileDiff = vi.fn<(params: { repoId: string; file: PushCommitFile; from: string; to: string }) => Promise<void>>();
 
   beforeEach(() => {
     pushRun.mockReset();
     pushRun.mockImplementation(async (params) => params.repoIds.map((repoId) => ({ repoId, ok: true })));
+    pushCommitFiles.mockReset();
+    pushCommitFiles.mockImplementation(async (params) => ({
+      from: 'c'.repeat(40),
+      to: params.hash ?? 'HEAD',
+      files: [{ path: 'src/app.ts', status: 5 }],
+    }));
+    pushFileDiff.mockReset();
+    pushFileDiff.mockImplementation(async () => {});
     transport = createMemoryTransport({
       'push.run': pushRun,
+      'push.commitFiles': pushCommitFiles,
+      'push.fileDiff': pushFileDiff,
       'push.preview': async (params) =>
         params.repoIds.map((id) =>
           id === 'r3' ? previewEntry(id, { upstream: undefined, ahead: undefined }) : previewEntry(id),
@@ -165,5 +177,72 @@ describe('Push dialog (IDEA semantics)', () => {
     instance.store.getState().setPushTags(true);
     await instance.store.getState().confirmPush();
     expect(pushRun.mock.calls[0]![0].tags).toBe(true);
+  });
+
+  it('selecting a commit loads its files; reselection hits the cache', async () => {
+    instance.store.getState().requestPush(['r1']);
+    await vi.waitFor(() => expect(dialog().previewLoading).toBe(false));
+    const hash = 'a'.repeat(40);
+    instance.store.getState().selectPushFiles('r1', hash);
+    await vi.waitFor(() => expect(dialog().filesLoading).toBe(false));
+    expect(pushCommitFiles).toHaveBeenCalledWith({ repoId: 'r1', hash });
+    expect(dialog().selected).toEqual({ repoId: 'r1', hash });
+    expect(dialog().files?.files).toEqual([{ path: 'src/app.ts', status: 5 }]);
+
+    instance.store.getState().selectPushFiles('r1');
+    await vi.waitFor(() => expect(dialog().filesLoading).toBe(false));
+    instance.store.getState().selectPushFiles('r1', hash);
+    expect(dialog().filesLoading).toBe(false);
+    expect(dialog().files?.files).toEqual([{ path: 'src/app.ts', status: 5 }]);
+    expect(pushCommitFiles).toHaveBeenCalledTimes(2);
+  });
+
+  it('whole-repo selection requests the outgoing range without a hash', async () => {
+    instance.store.getState().requestPush(['r1']);
+    await vi.waitFor(() => expect(dialog().previewLoading).toBe(false));
+    instance.store.getState().selectPushFiles('r1');
+    await vi.waitFor(() => expect(dialog().filesLoading).toBe(false));
+    expect(pushCommitFiles).toHaveBeenCalledWith({ repoId: 'r1', hash: undefined });
+    expect(dialog().files?.to).toBe('HEAD');
+  });
+
+  it('a stale files response never overwrites a newer selection', async () => {
+    let resolveFirst: (value: PushFilesResult) => void = () => {};
+    pushCommitFiles.mockImplementationOnce(
+      () =>
+        new Promise<PushFilesResult>((resolve) => {
+          resolveFirst = resolve;
+        }),
+    );
+    instance.store.getState().requestPush(['r1']);
+    await vi.waitFor(() => expect(dialog().previewLoading).toBe(false));
+    instance.store.getState().selectPushFiles('r1', 'a'.repeat(40));
+    instance.store.getState().selectPushFiles('r1', 'b'.repeat(40));
+    await vi.waitFor(() => expect(dialog().files?.to).toBe('b'.repeat(40)));
+    resolveFirst({ from: 'c'.repeat(40), to: 'a'.repeat(40), files: [{ path: 'stale.ts' }] });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(dialog().files?.to).toBe('b'.repeat(40));
+    expect(dialog().files?.files).toEqual([{ path: 'src/app.ts', status: 5 }]);
+  });
+
+  it('files errors surface in the pane without closing the dialog', async () => {
+    pushCommitFiles.mockRejectedValue({ code: 'GENERIC', message: 'diff failed' });
+    instance.store.getState().requestPush(['r1']);
+    await vi.waitFor(() => expect(dialog().previewLoading).toBe(false));
+    instance.store.getState().selectPushFiles('r1', 'a'.repeat(40));
+    await vi.waitFor(() => expect(dialog().filesLoading).toBe(false));
+    expect(dialog().filesError).toBe('diff failed');
+    expect(instance.store.getState().dialog?.kind).toBe('push');
+  });
+
+  it('openPushFileDiff forwards the file with the comparison refs', async () => {
+    instance.store.getState().requestPush(['r1']);
+    await vi.waitFor(() => expect(dialog().previewLoading).toBe(false));
+    const hash = 'a'.repeat(40);
+    instance.store.getState().selectPushFiles('r1', hash);
+    await vi.waitFor(() => expect(dialog().filesLoading).toBe(false));
+    const file: PushCommitFile = { path: 'src/app.ts', status: 5 };
+    await instance.store.getState().openPushFileDiff(file);
+    expect(pushFileDiff).toHaveBeenCalledWith({ repoId: 'r1', file, from: 'c'.repeat(40), to: hash });
   });
 });

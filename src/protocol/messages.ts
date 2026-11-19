@@ -16,6 +16,8 @@ import type {
   OperationState,
   PanelState,
   PartialSelection,
+  PushCommitFile,
+  PushFilesResult,
   PushPreviewEntry,
   PushRunRequest,
   PushRunResult,
@@ -146,6 +148,8 @@ export interface RequestMap {
   'repo.pull': { params: { repoId: string }; result: void };
   'repo.push': { params: { repoId: string; remote?: string }; result: void };
   'push.preview': { params: { repoIds: string[] }; result: PushPreviewEntry[] };
+  'push.commitFiles': { params: { repoId: string; hash?: string }; result: PushFilesResult };
+  'push.fileDiff': { params: { repoId: string; file: PushCommitFile; from: string; to: string }; result: void };
   'push.run': { params: PushRunRequest; result: PushRunResult[] };
   'log.list': { params: { repoId: string; skip?: number; author?: string; grep?: string }; result: LogPage };
   'log.cherryPick': { params: { repoId: string; oid: string }; result: void };

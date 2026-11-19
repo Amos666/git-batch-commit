@@ -3,13 +3,11 @@ import * as vscode from 'vscode';
 import { acquireGitApi } from '../adapter/gitApi';
 import type { GitApi } from '../adapter/gitApiTypes';
 import { RepoRegistry } from '../adapter/repoRegistry';
-import type { KernelDiffFile, KernelRepo } from '../kernel/types';
 import { makeError } from '../protocol/errors';
 import type { DiffSide } from '../protocol/messages';
+import type { PushCommitFile } from '../protocol/models';
+import { commitFileEntries, EMPTY_TREE_OID, rangeFileEntries } from '../services/commitFiles';
 import { guardWorktreeFile } from '../services/diffData';
-import { parseDiffPaths } from '../services/diffPaths';
-
-const EMPTY_TREE_OID = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
 
 /** Host-only editor side effects: native diff / multi-diff / merge editor. */
 export class EditorBridge {
@@ -67,7 +65,7 @@ export class EditorBridge {
     }
     const commit = await repo.getCommit(oid);
     const parent = commit.parents[0];
-    const entries = await this.commitFileEntries(repo, oid, parent);
+    const entries = await commitFileEntries(repo, oid, parent);
     if (entries.length === 0) {
       void vscode.window.showInformationMessage(`Commit ${oid.slice(0, 7)} has no file changes (possibly an empty or merge commit).`);
       return;
@@ -99,7 +97,7 @@ export class EditorBridge {
         // unrelated histories: fall back to direct HEAD comparison
       }
     }
-    const entries = await this.branchCompareEntries(repo, base, otherRef);
+    const entries = await rangeFileEntries(repo, base, otherRef);
     if (entries.length === 0) {
       void vscode.window.showInformationMessage(`${desc.name}: no file differences between ${headRef} and ${otherRef}.`);
       return;
@@ -119,6 +117,19 @@ export class EditorBridge {
     await vscode.commands.executeCommand('git.openMergeEditor', uri);
   }
 
+  /** Open one file of a commit (or of an outgoing range) as a two-side diff. */
+  async openCommitFileDiff(repoId: string, file: PushCommitFile, from: string, to: string): Promise<void> {
+    const desc = this.registry.descriptor(repoId);
+    if (!desc) {
+      throw makeError('NO_REPOSITORY', `Repository not found: ${repoId}`);
+    }
+    const api = await this.api();
+    const [, left, right] = this.compareResources(api, file, from, to, desc.rootPath);
+    const name = path.basename(file.renamePath ?? file.path);
+    const title = `${name} (${shortRef(from)} ↔ ${shortRef(to)})`;
+    await vscode.commands.executeCommand('vscode.diff', left, right, title, { preview: true });
+  }
+
   private async openMultiDiff(title: string, resources: [vscode.Uri, vscode.Uri, vscode.Uri][]): Promise<void> {
     try {
       await vscode.commands.executeCommand('vscode.changes', title, resources);
@@ -130,38 +141,6 @@ export class EditorBridge {
     }
   }
 
-  private async commitFileEntries(repo: KernelRepo, oid: string, parent: string | undefined): Promise<KernelDiffFile[]> {
-    // newer builds: stats2 takes a raw range; `<oid>^!` covers root commits
-    // (the empty-tree special case in diffBetweenWithStats is broken upstream:
-    // it compares against an async getter, so three-dot ranges always fail there)
-    if (typeof repo.diffBetweenWithStats2 === 'function') {
-      const range = parent ? `${parent}..${oid}` : `${oid}^!`;
-      return repo.diffBetweenWithStats2(range);
-    }
-    if (parent && typeof repo.diffBetweenPatch === 'function') {
-      return this.patchEntries(repo.rootPath, await repo.diffBetweenPatch(parent, oid));
-    }
-    // documented fallback: older API returns a patch string, newer stable parsed entries
-    const result = await repo.diffBetween(parent ?? EMPTY_TREE_OID, oid);
-    if (typeof result === 'string') {
-      return this.patchEntries(repo.rootPath, result);
-    }
-    return result;
-  }
-
-  private async branchCompareEntries(repo: KernelRepo, base: string, otherRef: string): Promise<KernelDiffFile[]> {
-    if (typeof repo.diffBetweenWithStats2 === 'function') {
-      return repo.diffBetweenWithStats2(`${base}..${otherRef}`);
-    }
-    const result = await repo.diffBetween(base, otherRef);
-    return typeof result === 'string' ? [] : result;
-  }
-
-  private patchEntries(rootPath: string, patch: string): KernelDiffFile[] {
-    // patch fallback carries no status; treat every path as modified
-    return parseDiffPaths(patch).map((p) => ({ path: p }));
-  }
-
   /**
    * Build [resource, original, modified] for the multi-diff editor.
    * Added files must point the original side at the empty tree and deleted
@@ -171,7 +150,7 @@ export class EditorBridge {
    */
   private compareResources(
     api: GitApi,
-    entry: KernelDiffFile,
+    entry: PushCommitFile,
     baseRef: string,
     targetRef: string,
     rootPath: string,
@@ -196,4 +175,11 @@ export class EditorBridge {
 function firstLine(message: string): string {
   const line = message.split('\n')[0] ?? '';
   return line.length > 60 ? `${line.slice(0, 60)}…` : line;
+}
+
+function shortRef(ref: string): string {
+  if (ref === EMPTY_TREE_OID) {
+    return '∅';
+  }
+  return /^[0-9a-f]{40,64}$/.test(ref) ? ref.slice(0, 7) : ref;
 }

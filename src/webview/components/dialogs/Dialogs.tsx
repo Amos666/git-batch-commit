@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react';
-import type { ChangelistFileRef } from '../../../protocol/models';
+import type { ChangelistFileRef, PushPreviewCommit, PushPreviewEntry } from '../../../protocol/models';
 import { STRINGS } from '../../strings/en';
 import { usePanelStore } from '../../state/StoreContext';
 import type { Dialog } from '../../state/types';
@@ -14,11 +14,13 @@ function Shell({
   testId,
   children,
   footer,
+  wide,
 }: {
   title: string;
   testId: string;
   children: ReactNode;
   footer: ReactNode;
+  wide?: boolean;
 }) {
   const closeDialog = usePanelStore((s) => s.closeDialog);
   const dialogBusy = usePanelStore((s) => s.dialogBusy);
@@ -32,7 +34,7 @@ function Shell({
         }
       }}
     >
-      <div className="gbc-dialog" role="dialog" aria-modal="true" aria-label={title} data-testid={testId}>
+      <div className={wide ? 'gbc-dialog gbc-dialog-wide' : 'gbc-dialog'} role="dialog" aria-modal="true" aria-label={title} data-testid={testId}>
         <div className="gbc-dialog-head">
           <span className="gbc-dialog-title">{title}</span>
           <button type="button" className="gbc-banner-close" aria-label={A.close} data-testid="dialog-close" onClick={closeDialog}>
@@ -500,6 +502,7 @@ function PushDialog({ dialog }: { dialog: Extract<Dialog, { kind: 'push' }> }) {
   const cancelForcePush = usePanelStore((s) => s.cancelForcePush);
   const confirmForcePush = usePanelStore((s) => s.confirmForcePush);
   const retryPushRepo = usePanelStore((s) => s.retryPushRepo);
+  const selectPushFiles = usePanelStore((s) => s.selectPushFiles);
   const cancelRemaining = usePanelStore((s) => s.cancelRemaining);
   const selected = dialog.repoIds.filter((id) => dialog.checked[id]);
   const results = Object.values(dialog.results);
@@ -528,6 +531,7 @@ function PushDialog({ dialog }: { dialog: Extract<Dialog, { kind: 'push' }> }) {
     <Shell
       title={D.pushTitle}
       testId="dialog-push"
+      wide
       footer={
         <>
           <label className="gbc-pushtags">
@@ -562,6 +566,7 @@ function PushDialog({ dialog }: { dialog: Extract<Dialog, { kind: 'push' }> }) {
         </>
       }
     >
+      <div className="gbc-pushpanes">
       <ul className="gbc-pushlist" data-testid="push-repos">
         {dialog.repoIds.map((id) => {
           const status = repos[id];
@@ -594,7 +599,14 @@ function PushDialog({ dialog }: { dialog: Extract<Dialog, { kind: 'push' }> }) {
                   testId="push-check"
                   disabled={dialogBusy}
                 />
-                <span className="gbc-repo-name">{status.repo.name}</span>
+                <button
+                  type="button"
+                  className={dialog.selected?.repoId === id && !dialog.selected.hash ? 'gbc-repo-name gbc-pushsel-on' : 'gbc-repo-name'}
+                  data-testid="push-repo-select"
+                  onClick={() => selectPushFiles(id)}
+                >
+                  {status.repo.name}
+                </button>
                 <span className="gbc-pushref">
                   {branch.name}
                   {branch.upstream ? ` → ${branch.upstream}` : ''}
@@ -638,10 +650,31 @@ function PushDialog({ dialog }: { dialog: Extract<Dialog, { kind: 'push' }> }) {
                   ) : entry && entry.commits.length > 0 ? (
                     <>
                       {entry.commits.slice(0, 10).map((c) => (
-                        <li key={c.hash} className="gbc-pushcommit">
+                        <li
+                          key={c.hash}
+                          className={
+                            dialog.selected?.repoId === id && dialog.selected.hash === c.hash
+                              ? 'gbc-pushcommit gbc-pushsel-on'
+                              : 'gbc-pushcommit'
+                          }
+                          data-testid="push-commit"
+                          tabIndex={0}
+                          onClick={() => selectPushFiles(id, c.hash)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter' || e.key === ' ') {
+                              e.preventDefault();
+                              selectPushFiles(id, c.hash);
+                            }
+                          }}
+                        >
                           <span className="gbc-pushcommit-hash">{c.hash.slice(0, 7)}</span>
                           <span className="gbc-pushcommit-msg">{c.message.split('\n')[0]}</span>
-                          {c.authorName && <span className="gbc-pushcommit-author">{c.authorName}</span>}
+                          {c.authorName && (
+                            <span className="gbc-pushcommit-author">
+                              {c.authorName}
+                              {isOtherAuthor(entry, c) ? '*' : ''}
+                            </span>
+                          )}
                         </li>
                       ))}
                       {entry.commits.length > 10 && (
@@ -667,6 +700,8 @@ function PushDialog({ dialog }: { dialog: Extract<Dialog, { kind: 'push' }> }) {
           );
         })}
       </ul>
+      <PushFilesPane dialog={dialog} />
+      </div>
       {results.length > 0 && (
         <div className="gbc-pushsummary" data-testid="push-summary">
           {D.pushSummary(pushed, failed)}
@@ -674,6 +709,94 @@ function PushDialog({ dialog }: { dialog: Extract<Dialog, { kind: 'push' }> }) {
       )}
     </Shell>
   );
+}
+
+function PushFilesPane({ dialog }: { dialog: Extract<Dialog, { kind: 'push' }> }) {
+  const repos = usePanelStore((s) => s.repos);
+  const openPushFileDiff = usePanelStore((s) => s.openPushFileDiff);
+  const sel = dialog.selected;
+  const files = dialog.files;
+  const repoName = sel ? (repos[sel.repoId]?.repo.name ?? sel.repoId) : '';
+  const header = sel
+    ? sel.hash
+      ? `${repoName} · ${sel.hash.slice(0, 7)}`
+      : `${repoName} · ${repos[sel.repoId]?.branch.name ?? ''}`
+    : D.pushFilesHint;
+  return (
+    <div className="gbc-pushfiles" data-testid="push-files">
+      <div className="gbc-pushfiles-head" data-testid="push-files-head">
+        <span className="gbc-pushfiles-title">{header}</span>
+        {files && !dialog.filesLoading && (
+          <span className="gbc-pushfiles-count">{D.pushFilesCount(files.files.length)}</span>
+        )}
+      </div>
+      {dialog.filesLoading ? (
+        <div className="gbc-pushcommit-muted" data-testid="push-files-loading">{D.pushFilesLoading}</div>
+      ) : dialog.filesError ? (
+        <div className="gbc-pushcommit-muted" data-testid="push-files-error">{dialog.filesError}</div>
+      ) : !sel ? null : files && files.files.length > 0 ? (
+        <ul className="gbc-pushfilelist">
+          {files.files.map((f) => {
+            const display = f.renamePath ?? f.path;
+            const renamed = f.origPath !== undefined && f.origPath !== display;
+            return (
+              <li
+                key={f.path}
+                className="gbc-pushfile"
+                data-testid="push-file"
+                tabIndex={0}
+                title={display}
+                onDoubleClick={() => void openPushFileDiff(f)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    void openPushFileDiff(f);
+                  }
+                }}
+              >
+                <span className={`gbc-pushfile-status gbc-pushfile-${statusLetter(f.status)}`}>{statusLetter(f.status)}</span>
+                <span className="gbc-pushfile-path">{display}</span>
+                {renamed && <span className="gbc-pushfile-orig">← {f.origPath}</span>}
+              </li>
+            );
+          })}
+        </ul>
+      ) : (
+        <div className="gbc-pushcommit-muted" data-testid="push-files-empty">{D.pushFilesEmpty}</div>
+      )}
+    </div>
+  );
+}
+
+function statusLetter(status: number | undefined): string {
+  switch (status) {
+    case 1:
+      return 'A';
+    case 2:
+    case 6:
+      return 'D';
+    case 3:
+      return 'R';
+    case 4:
+      return 'C';
+    case 11:
+      return 'T';
+    default:
+      return 'M';
+  }
+}
+
+function isOtherAuthor(entry: PushPreviewEntry | undefined, commit: PushPreviewCommit): boolean {
+  const self = entry?.selfAuthor;
+  if (!self) {
+    return false;
+  }
+  if (self.email && commit.authorEmail) {
+    return self.email.toLowerCase() !== commit.authorEmail.toLowerCase();
+  }
+  if (self.name && commit.authorName) {
+    return self.name !== commit.authorName;
+  }
+  return false;
 }
 
 function AmendPushedDialog() {

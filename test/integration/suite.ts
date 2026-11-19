@@ -19,6 +19,7 @@ import { EditorBridge } from '../../src/ui/editorBridge';
 import { ChangelistService } from '../../src/services/changelistService';
 import type { ChangelistStorage } from '../../src/services/changelistService';
 import { ChecksService } from '../../src/services/checksService';
+import { commitFileEntries, rangeFileEntries } from '../../src/services/commitFiles';
 import { DiffDataService } from '../../src/services/diffDataService';
 import { EditorActions } from '../../src/ui/editorActions';
 import { HunkService } from '../../src/services/hunkService';
@@ -1113,6 +1114,58 @@ export async function run(): Promise<void> {
     const targeted = await orchestrator.runPush({ repoIds: [idC], targets: { [idC]: { remote: 'r-one', branch: 'main' } } });
     assert.notStrictEqual(targeted[0]?.error?.code, 'NO_REMOTE', 'explicit target must bypass remote resolution');
     ok('push target resolution: NO_REMOTE without remotes, ambiguous choice required, explicit target honored');
+
+    // 50. push files data path: per-commit, outgoing range, root commit; single-file diff opens
+    fs.writeFileSync(path.join(repoAPath, 'push-a3.txt'), 'a3\n');
+    gitA('add', 'push-a3.txt');
+    gitA('commit', '-m', 'push: outgoing A3');
+    await waitFor(() => (repoA.state.HEAD?.ahead ?? 0) > 0, 'repoA ahead for files preview');
+    const filesOid = gitA('rev-parse', 'HEAD').toString().trim();
+    const filesCommit = await kernelRepoA!.getCommit(filesOid);
+    const filesParent = filesCommit.parents[0];
+    const singleFiles = await commitFileEntries(kernelRepoA!, filesOid, filesParent);
+    assert.ok(singleFiles.some((f) => f.path === 'push-a3.txt'), 'per-commit file list must include the added file');
+    const rangeFiles = await rangeFileEntries(kernelRepoA!, 'push-origin/main', 'HEAD');
+    assert.ok(rangeFiles.some((f) => f.path === 'push-a3.txt'), 'outgoing range file list must include the added file');
+    const rootA = gitA('rev-list', '--max-parents=0', 'HEAD').toString().trim();
+    const rootFiles = await commitFileEntries(kernelRepoA!, rootA, undefined);
+    assert.ok(rootFiles.length > 0, 'root commit file list must not be empty');
+    const pushDiff = new EditorBridge(registry);
+    await pushDiff.openCommitFileDiff(idA, { path: 'push-a3.txt', status: 1 }, filesParent ?? EMPTY_TREE, filesOid);
+    await waitFor(
+      () => vscode.window.tabGroups.all.some((g) => g.tabs.some((t) => t.label.includes('push-a3.txt'))),
+      'push file diff tab opened',
+    );
+    await vscode.commands.executeCommand('workbench.action.closeActiveEditor');
+    ok('push files: per-commit / outgoing-range / root-commit lists + single-file diff opens');
+
+    // 51. mode-only partial commit: the exec bit reaches the index and HEAD, no residual dirty entry
+    // git init's fileMode probe can write false on filesystems that force mode
+    // bits (this CI storage layer does); pin the Linux default so the mode-only
+    // change is a real modification, as on a normal Linux checkout.
+    gitA('config', 'core.fileMode', 'true');
+    const modeAbs = path.join(repoAPath, 'mode-file.txt');
+    fs.writeFileSync(modeAbs, 'mode\n');
+    // this storage layer forces new files to 755; pin a non-exec baseline
+    fs.chmodSync(modeAbs, 0o644);
+    gitA('add', 'mode-file.txt');
+    gitA('commit', '-m', 'mode base');
+    fs.chmodSync(modeAbs, 0o755);
+    // a pure chmod emits no watcher event; rewrite identical content so the
+    // git extension rescans (the diff stays mode-only)
+    fs.writeFileSync(modeAbs, 'mode\n');
+    await kernelRepoA?.refresh?.();
+    await waitFor(() => repoA.state.workingTreeChanges.some((c) => c.uri.fsPath === modeAbs), 'mode-only change visible');
+    const modeRun = await orchestrator.run({
+      repoIds: [idA],
+      message: 'mode-only partial commit',
+      options: {},
+      expectedIncluded: { [idA]: [{ path: 'mode-file.txt', selection: { hunkIds: [] } }] },
+    });
+    assert.strictEqual(modeRun[0]?.ok, true, `mode-only commit failed: ${JSON.stringify(modeRun[0]?.error)}`);
+    assert.strictEqual(gitA('ls-tree', 'HEAD', 'mode-file.txt').toString().split(' ')[0], '100755', 'exec bit must land in HEAD');
+    await waitFor(() => !repoA.state.workingTreeChanges.some((c) => c.uri.fsPath === modeAbs), 'mode-only entry cleared after commit');
+    ok('mode-only partial commit: stagePartial syncs the exec bit, no residual dirty entry');
 
     gitA('remote', 'remove', 'push-origin');
     gitB('remote', 'remove', 'push-origin');

@@ -201,6 +201,7 @@ export interface PushPreviewCommit {
   hash: string;
   message: string;
   authorName?: string;
+  authorEmail?: string;
   /** epoch ms */
   authorDate?: number;
 }
@@ -215,6 +216,26 @@ export interface PushPreviewEntry {
   hasMore: boolean;
   /** kernel lacks log capability */
   previewUnavailable?: boolean;
+  /** configured git identity of this repo, for marking other-author commits */
+  selfAuthor?: { name?: string; email?: string };
+}
+
+/** One changed file of an outgoing commit (or of the whole outgoing range). */
+export interface PushCommitFile {
+  /** repo-relative posix path */
+  path: string;
+  origPath?: string;
+  renamePath?: string;
+  /** KernelStatus numeric value */
+  status?: number;
+}
+
+export interface PushFilesResult {
+  /** left ref of the comparison (parent oid, upstream name or empty tree) */
+  from: string;
+  /** right ref (commit oid or HEAD) */
+  to: string;
+  files: PushCommitFile[];
 }
 
 export interface CommitRequestV2 {

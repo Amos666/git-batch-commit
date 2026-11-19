@@ -26,6 +26,7 @@ export type MiniRequest =
   | { cmd: 'remote-contains'; oid: string }
   | { cmd: 'git-dir' }
   | { cmd: 'status-porcelain' }
+  | { cmd: 'config-get'; key: 'user.name' | 'user.email' }
   | { cmd: 'commit'; messageFile: string; authorName?: string; authorEmail?: string; amend?: boolean; signoff?: boolean; noVerify?: boolean };
 
 export interface IndexEntry {
@@ -148,6 +149,11 @@ export function buildArgs(req: MiniRequest): string[] {
       return ['rev-parse', '--git-dir'];
     case 'status-porcelain':
       return ['status', '--porcelain=v1', '-z', '--untracked-files=no'];
+    case 'config-get':
+      if (req.key !== 'user.name' && req.key !== 'user.email') {
+        throw makeError('GENERIC', 'Invalid config key');
+      }
+      return ['config', '--get', req.key];
     case 'commit': {
       if (!validatePatchPath(req.messageFile)) {
         throw makeError('GENERIC', 'Invalid commit message file path');
@@ -220,7 +226,8 @@ export class MiniRunner {
       req.cmd === 'apply-check' ||
       req.cmd === 'remote-contains' ||
       req.cmd === 'git-dir' ||
-      req.cmd === 'status-porcelain';
+      req.cmd === 'status-porcelain' ||
+      req.cmd === 'config-get';
     const prev = this.queues.get(repoRoot) ?? Promise.resolve();
     const task = prev.then(() => this.execWithLockRetry(repoRoot, args, readOnly, requestEnv(req)));
     this.queues.set(

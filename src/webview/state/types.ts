@@ -22,6 +22,8 @@ import type {
   OperationState,
   PanelState,
   PartialSelection,
+  PushCommitFile,
+  PushFilesResult,
   PushPreviewEntry,
   PushRunResult,
   RepoStatus,
@@ -76,6 +78,12 @@ export type Dialog =
       results: Record<string, PushRunResult>;
       tags: boolean;
       forceConfirm?: boolean;
+      /** left-tree selection driving the right-hand changed-files pane */
+      selected?: { repoId: string; hash?: string };
+      files?: PushFilesResult;
+      filesLoading: boolean;
+      filesError?: string;
+      filesCache: Record<string, PushFilesResult>;
     }
   | { kind: 'amendPushed' }
   | { kind: 'checksReport'; report: CheckReport; pushAfter: boolean; postCommit?: boolean; repoIds?: string[] }
@@ -255,6 +263,8 @@ export interface PanelStore {
   cancelForcePush: () => void;
   confirmForcePush: () => Promise<void>;
   retryPushRepo: (repoId: string) => Promise<void>;
+  selectPushFiles: (repoId: string, hash?: string) => void;
+  openPushFileDiff: (file: PushCommitFile) => Promise<void>;
 
   // shelf actions
   openShelfTab: (repoId?: string) => Promise<void>;

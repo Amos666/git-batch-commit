@@ -240,9 +240,27 @@ export function defaultHandlers(emit: Emit): MemoryHandlers {
         upstream: 'origin/main',
         ahead: 1,
         remotes: ['origin'],
-        commits: [{ hash: 'e'.repeat(40), message: 'Demo outgoing commit', authorName: 'Demo Dev', authorDate: Date.now() }],
+        commits: [
+          {
+            hash: 'e'.repeat(40),
+            message: 'Demo outgoing commit',
+            authorName: 'Demo Dev',
+            authorEmail: 'demo@example.com',
+            authorDate: Date.now(),
+          },
+        ],
         hasMore: false,
+        selfAuthor: { name: 'Demo Dev', email: 'demo@example.com' },
       })),
+    'push.commitFiles': async (params) => ({
+      from: 'f'.repeat(40),
+      to: params.hash ?? 'HEAD',
+      files: [
+        { path: 'src/app.ts', status: 5 },
+        { path: 'README.md', status: 5 },
+      ],
+    }),
+    'push.fileDiff': async () => {},
     'push.run': async (params) => params.repoIds.map((repoId) => ({ repoId, ok: true })),
     'log.list': async () => ({
       entries: [

@@ -310,6 +310,22 @@ const pushChord = async () => {
   await ev(`(doc) => { const a = doc.activeElement; if (a && a.blur) a.blur(); }`);
   await cdp.chord([{ key: 'p', code: 'KeyP', vk: 80, ctrl: true, alt: true, shift: true }]);
 };
+const pushRepoARow = `Array.from(doc.querySelectorAll('[data-testid="push-repo"]')).find(r => (r.innerText || '').includes('repoA'))`;
+const clickRepoACommit = async (msg) => {
+  await ev(`(doc) => {
+    const row = ${pushRepoARow};
+    if (row && !row.querySelector('[data-testid="push-commits"]')) row.querySelector('[data-testid="push-expand"]')?.click();
+  }`);
+  const found = await waitFor(() => ev(`(doc) => {
+    const row = ${pushRepoARow};
+    return Array.from(row?.querySelectorAll('[data-testid="push-commit"]') ?? []).some(c => (c.innerText || '').includes(${JSON.stringify(msg)}));
+  }`));
+  await ev(`(doc) => {
+    const row = ${pushRepoARow};
+    Array.from(row?.querySelectorAll('[data-testid="push-commit"]') ?? []).find(c => (c.innerText || '').includes(${JSON.stringify(msg)}))?.click();
+  }`);
+  return found;
+};
 // vscode.git observes new remotes asynchronously: retry the dialog until the preview sees them
 const repoARemoteVisible = () => ev(`(doc) => {
   const row = Array.from(doc.querySelectorAll('[data-testid="push-repo"]')).find(r => (r.innerText || '').includes('repoA'));
@@ -361,6 +377,22 @@ check('outgoing commits preview lists the new commit', await waitFor(() => ev(`(
   const row = Array.from(doc.querySelectorAll('[data-testid="push-repo"]')).find(r => (r.innerText || '').includes('repoA'));
   return (row?.querySelector('[data-testid="push-commits"]')?.innerText ?? '').includes('walkthrough batch push');
 }`)));
+// IDEA right-hand pane: commit selection → its changed files; double-click → editor diff
+await clickRepoACommit('walkthrough batch push');
+check('commit selection loads the changed-files pane', await waitFor(() => ev(`(doc) => doc.querySelectorAll('[data-testid="push-files"] [data-testid="push-file"]').length > 0`)));
+const pushFilePath = await ev(`(doc) => doc.querySelector('[data-testid="push-file"] .gbc-pushfile-path')?.textContent ?? ''`);
+await shot(wb, 'w17b-push-files');
+await ev(`(doc) => { doc.querySelector('[data-testid="push-file"]')?.dispatchEvent(new MouseEvent('dblclick', { bubbles: true })); }`);
+const pushFileBase = pushFilePath.split('/').pop();
+check('double-click opens the file diff in the editor area', await waitFor(() => wb.eval(`Array.from(document.querySelectorAll('.tab')).some(t => (t.textContent || '').includes(${JSON.stringify(pushFileBase)}))`), 15000));
+await ev(`(doc) => {
+  const row = ${pushRepoARow};
+  row?.querySelector('[data-testid="push-repo-select"]')?.click();
+}`);
+check('repo selection lists the outgoing range files', await waitFor(() => ev(`(doc) => {
+  const head = doc.querySelector('[data-testid="push-files-head"]')?.innerText ?? '';
+  return head.includes('main') && doc.querySelectorAll('[data-testid="push-file"]').length > 0;
+}`)));
 await shot(wb, 'w17-push-dialog');
 await clickTestId(ev, 'dialog-ok-main');
 check('push dialog closes after successful batch push', await waitFor(async () => !(await has('dialog-push')), 25000));
@@ -386,6 +418,8 @@ for (let i = 0; i < 8 && !aheadChecked; i++) {
 }
 check('standalone push opens dialog', await has('dialog-push'));
 check('ahead repo default-checked', aheadChecked);
+await clickRepoACommit('walk ahead');
+check('empty commit shows the no-files state', await waitFor(() => has('push-files-empty')));
 await checkOnly(['repoA']);
 await clickTestId(ev, 'dialog-ok-main');
 check('standalone push completes', await waitFor(async () => !(await has('dialog-push')), 25000));

@@ -22,10 +22,11 @@ import { makeError, mapGitErrorCode } from '../protocol/errors';
 import type { ProtocolError } from '../protocol/errors';
 import { normalizeCommitRequest } from '../protocol/messages';
 import type { BranchRef, EventMap, InitResult, LogPage, PanelSettings } from '../protocol/messages';
-import type { ChangelistFileRef, ChangelistState, CommitOptionsState, PanelState, PushPreviewEntry, UnavailableReason } from '../protocol/models';
+import type { ChangelistFileRef, ChangelistState, CommitOptionsState, PanelState, PushFilesResult, PushPreviewEntry, UnavailableReason } from '../protocol/models';
 import { ChangelistService } from '../services/changelistService';
 import type { ChangelistStorage } from '../services/changelistService';
 import { ChecksService } from '../services/checksService';
+import { commitFileEntries, EMPTY_TREE_OID, rangeFileEntries } from '../services/commitFiles';
 import { DiffDataService } from '../services/diffDataService';
 import { guardWorktreeFile } from '../services/diffData';
 import { HunkService } from '../services/hunkService';
@@ -602,10 +603,11 @@ export class Backend implements vscode.Disposable {
           continue;
         }
         const head = repo.state.HEAD;
+        const upstreamRef = head?.upstream ? `${head.upstream.remote}/${head.upstream.name}` : undefined;
         const entry: PushPreviewEntry = {
           repoId,
           branch: head?.name,
-          upstream: head?.upstream?.name,
+          upstream: upstreamRef,
           ahead: head?.ahead,
           remotes: repo.state.remotes.map((r) => r.name),
           commits: [],
@@ -614,23 +616,75 @@ export class Backend implements vscode.Disposable {
         };
         if (head?.name && repo.log) {
           try {
-            const max = head.upstream ? 200 : 10;
-            const range = head.upstream ? `${head.upstream.name}..HEAD` : 'HEAD';
+            const max = upstreamRef ? 200 : 10;
+            const range = upstreamRef ? `${upstreamRef}..HEAD` : 'HEAD';
             const commits = await repo.log({ range, maxEntries: max + 1 });
             entry.hasMore = commits.length > max;
             entry.commits = commits.slice(0, max).map((c) => ({
               hash: c.hash,
               message: c.message,
               authorName: c.authorName,
+              authorEmail: c.authorEmail,
               authorDate: c.authorDate?.getTime(),
             }));
           } catch {
             // preview is best-effort; pushing still works without it
           }
         }
+        const desc = s.registry.descriptor(repoId);
+        if (desc) {
+          try {
+            const read = async (key: 'user.name' | 'user.email'): Promise<string | undefined> => {
+              const v = (await s.mini.run(desc.rootPath, { cmd: 'config-get', key })).stdout.toString('utf8').trim();
+              return v || undefined;
+            };
+            const [name, email] = await Promise.all([read('user.name'), read('user.email')]);
+            if (name || email) {
+              entry.selfAuthor = { name, email };
+            }
+          } catch {
+            // identity is optional; asterisk marking degrades silently
+          }
+        }
         entries.push(entry);
       }
       return entries;
+    });
+    gateway.register('push.commitFiles', async (params): Promise<PushFilesResult> => {
+      const s = await this.ready();
+      const repo = s.registry.get(params.repoId);
+      if (!repo) {
+        throw makeError('NO_REPOSITORY', `Repository not found: ${params.repoId}`);
+      }
+      if (params.hash) {
+        const commit = await repo.getCommit(params.hash);
+        const parent = commit.parents[0];
+        const files = await commitFileEntries(repo, params.hash, parent);
+        return { from: parent ?? EMPTY_TREE_OID, to: params.hash, files };
+      }
+      const head = repo.state.HEAD;
+      if (head?.upstream) {
+        const upstreamRef = `${head.upstream.remote}/${head.upstream.name}`;
+        const files = await rangeFileEntries(repo, upstreamRef, 'HEAD');
+        return { from: upstreamRef, to: 'HEAD', files };
+      }
+      // no upstream: the outgoing set is the previewed commits (HEAD, max 10);
+      // diff from the parent of the oldest previewed commit to HEAD
+      if (!repo.log) {
+        throw makeError('CAPABILITY_UNAVAILABLE', 'The active git kernel does not support log');
+      }
+      const commits = await repo.log({ range: 'HEAD', maxEntries: 11 });
+      const oldest = commits[Math.min(commits.length, 10) - 1];
+      if (!oldest) {
+        return { from: EMPTY_TREE_OID, to: 'HEAD', files: [] };
+      }
+      const base = commits[10]?.hash ?? (await repo.getCommit(oldest.hash)).parents[0] ?? EMPTY_TREE_OID;
+      const files = await rangeFileEntries(repo, base, 'HEAD');
+      return { from: base, to: 'HEAD', files };
+    });
+    gateway.register('push.fileDiff', async (params): Promise<void> => {
+      const s = await this.ready();
+      await s.editor.openCommitFileDiff(params.repoId, params.file, params.from, params.to);
     });
     gateway.register('push.run', async (params) => {
       const s = await this.ready();

@@ -26,6 +26,12 @@ describe('miniRunner argument whitelist', () => {
     expect(() => buildArgs({ cmd: 'ls-files', path: 'a\0b' })).toThrow();
   });
 
+  it('config-get only accepts the identity keys', () => {
+    expect(buildArgs({ cmd: 'config-get', key: 'user.email' })).toEqual(['config', '--get', 'user.email']);
+    expect(buildArgs({ cmd: 'config-get', key: 'user.name' })).toEqual(['config', '--get', 'user.name']);
+    expect(() => buildArgs({ cmd: 'config-get', key: 'core.sshCommand' as 'user.name' })).toThrow();
+  });
+
   it('rejects dangerous branch names', () => {
     for (const bad of ['--force', 'a..b', 'a@{b', 'a/', '.hidden', 'a.lock', 'a b', 'a;rm', '/abs']) {
       expect(validateBranchName(bad), bad).toBe(false);
