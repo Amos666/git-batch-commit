@@ -16,6 +16,7 @@ export type ErrorCode =
   | 'AUTH_FAILED'
   | 'LOCKED'
   | 'PUSH_REJECTED'
+  | 'NO_REMOTE'
   | 'CONFLICT'
   | 'NETWORK'
   | 'CANCELLED'

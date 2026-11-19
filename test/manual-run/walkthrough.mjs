@@ -290,6 +290,130 @@ check('mode dialog title = Enable Staging Area', modeTitle === STRINGS.dialogs.m
 await shot(wb, 'w16-modeswitch-light');
 await clickTestId(ev, 'dialog-close');
 
+// 8) batch push: visible Commit and Push button → commit → Push dialog → confirm;
+//    standalone push keybinding; a rejected repo keeps the dialog open with per-row error.
+const repoA = path.resolve('test/integration/.tmp/repoA');
+const repoB = path.resolve('test/integration/.tmp/repoB');
+const gitA = (...args) => execFileSync('git', args, { cwd: repoA, stdio: 'pipe' });
+const gitB = (...args) => execFileSync('git', args, { cwd: repoB, stdio: 'pipe' });
+const bareA = path.resolve('test/integration/.tmp/.walkPushA.git');
+const bareB = path.resolve('test/integration/.tmp/.walkPushB.git');
+execFileSync('git', ['init', '--bare', '-b', 'main', bareA], { stdio: 'pipe' });
+execFileSync('git', ['init', '--bare', '-b', 'main', bareB], { stdio: 'pipe' });
+gitA('remote', 'add', 'walk-origin', bareA);
+gitB('remote', 'add', 'walk-origin', bareB);
+// After a dialog closes, focus can fall back to the workbench: re-focus inside the
+// webview (then blur the textarea) so the panel keymap receives the push chord.
+const pushChord = async () => {
+  await ev(`(doc) => { doc.querySelector('[data-testid="commit-message"]')?.focus(); }`);
+  await sleep(250);
+  await ev(`(doc) => { const a = doc.activeElement; if (a && a.blur) a.blur(); }`);
+  await cdp.chord([{ key: 'p', code: 'KeyP', vk: 80, ctrl: true, alt: true, shift: true }]);
+};
+// vscode.git observes new remotes asynchronously: retry the dialog until the preview sees them
+const repoARemoteVisible = () => ev(`(doc) => {
+  const row = Array.from(doc.querySelectorAll('[data-testid="push-repo"]')).find(r => (r.innerText || '').includes('repoA'));
+  return Array.from(row?.querySelector('[data-testid="push-remote"]')?.options ?? []).some(o => o.value === 'walk-origin');
+}`);
+let remotesSeen = false;
+for (let i = 0; i < 6 && !remotesSeen; i++) {
+  await pushChord();
+  await waitFor(() => has('dialog-push'));
+  remotesSeen = await waitFor(repoARemoteVisible, 10000);
+  if (!remotesSeen) {
+    await clickTestId(ev, 'dialog-close');
+    await sleep(1000);
+  }
+}
+check('push preview sees freshly added remotes', remotesSeen);
+await clickTestId(ev, 'dialog-close');
+await sleep(300);
+check('Commit and Push button visible', await has('commit-push-button'));
+// repoB fixture ships a failing pre-commit hook: disable Run Git hooks via the options panel
+await cdp.chord([{ key: 'o', code: 'KeyO', vk: 79, ctrl: true, alt: true }]);
+await waitFor(() => has('options-panel'));
+await ev(`(doc) => { const c = doc.querySelector('[data-testid="option-runhooks"]'); if (c && c.checked) c.click(); }`);
+await cdp.chord([{ key: 'o', code: 'KeyO', vk: 79, ctrl: true, alt: true }]);
+await sleep(400);
+await setInput(ev, '[data-testid="commit-message"]', 'walkthrough batch push');
+await sleep(300);
+await clickTestId(ev, 'commit-push-button');
+check('commit-and-push opens Push dialog after commit', await waitFor(() => has('dialog-push'), 25000));
+check('push dialog lists project rows with checkboxes', await ev(`(doc) => doc.querySelectorAll('[data-testid="push-repo"] [data-testid="push-check"]').length >= 2`));
+// The workspace also contains fixture repos (sub/nested/repoC/repoW) whose push targets
+// are unreachable or absent: per-root selection lets the user scope the batch (IDEA parity).
+const checkOnly = (names) => ev(`(doc) => {
+  const want = ${JSON.stringify(names)};
+  for (const row of doc.querySelectorAll('[data-testid="push-repo"]')) {
+    const name = (row.innerText || '').split('\\n')[0];
+    const c = row.querySelector('[data-testid="push-check"]');
+    if (!c) continue;
+    const on = want.includes(name);
+    if (c.checked !== on) c.click();
+  }
+}`);
+await checkOnly(['repoA', 'repoB']);
+await ev(`(doc) => {
+  const row = Array.from(doc.querySelectorAll('[data-testid="push-repo"]')).find(r => (r.innerText || '').includes('repoA'));
+  row?.querySelector('[data-testid="push-expand"]')?.click();
+}`);
+check('outgoing commits preview lists the new commit', await waitFor(() => ev(`(doc) => {
+  const row = Array.from(doc.querySelectorAll('[data-testid="push-repo"]')).find(r => (r.innerText || '').includes('repoA'));
+  return (row?.querySelector('[data-testid="push-commits"]')?.innerText ?? '').includes('walkthrough batch push');
+}`)));
+await shot(wb, 'w17-push-dialog');
+await clickTestId(ev, 'dialog-ok-main');
+check('push dialog closes after successful batch push', await waitFor(async () => !(await has('dialog-push')), 25000));
+const bareHead = (bare) => execFileSync('git', ['--git-dir', bare, 'rev-parse', 'main'], { stdio: 'pipe' }).toString().trim();
+check('bare A received the pushed commit', gitA('rev-parse', 'HEAD').toString().trim() === bareHead(bareA));
+check('bare B received the pushed commit (no-upstream auto remote)', gitB('rev-parse', 'HEAD').toString().trim() === bareHead(bareB));
+
+// standalone push: only ahead roots default-checked (ahead propagates asynchronously)
+gitA('commit', '-q', '--allow-empty', '-m', 'walk ahead');
+const repoAChecked = () => ev(`(doc) => {
+  const row = Array.from(doc.querySelectorAll('[data-testid="push-repo"]')).find(r => (r.innerText || '').includes('repoA'));
+  return row?.querySelector('[data-testid="push-check"]')?.checked === true;
+}`);
+let aheadChecked = false;
+for (let i = 0; i < 8 && !aheadChecked; i++) {
+  await sleep(1000);
+  await pushChord();
+  await waitFor(() => has('dialog-push'));
+  aheadChecked = await repoAChecked();
+  if (!aheadChecked) {
+    await clickTestId(ev, 'dialog-close');
+  }
+}
+check('standalone push opens dialog', await has('dialog-push'));
+check('ahead repo default-checked', aheadChecked);
+await checkOnly(['repoA']);
+await clickTestId(ev, 'dialog-ok-main');
+check('standalone push completes', await waitFor(async () => !(await has('dialog-push')), 25000));
+
+// rejected push: dialog stays open with per-repo error + summary + Retry
+const scratch = path.resolve('test/integration/.tmp/.walkPushScratch');
+execFileSync('git', ['clone', '-q', bareA, scratch], { stdio: 'pipe' });
+fs.writeFileSync(path.join(scratch, 'remote-side.txt'), 'r\n');
+execFileSync('git', ['add', '.'], { cwd: scratch, stdio: 'pipe' });
+execFileSync('git', ['commit', '-q', '-m', 'remote side'], { cwd: scratch, stdio: 'pipe' });
+execFileSync('git', ['push', '-q', 'origin', 'main'], { cwd: scratch, stdio: 'pipe' });
+gitA('commit', '-q', '--allow-empty', '-m', 'walk rejected');
+await sleep(1000);
+await pushChord();
+await waitFor(() => has('dialog-push'));
+await checkOnly(['repoA']);
+await clickTestId(ev, 'dialog-ok-main');
+check('rejected push keeps dialog open with per-repo error', await waitFor(() => has('push-error'), 25000));
+check('push summary reports failure', await ev(`(doc) => (doc.querySelector('[data-testid="push-summary"]')?.innerText ?? '').includes('failed')`));
+check('failed row offers Retry', await has('push-retry'));
+await shot(wb, 'w18-push-rejected');
+await clickTestId(ev, 'dialog-close');
+gitA('remote', 'remove', 'walk-origin');
+gitB('remote', 'remove', 'walk-origin');
+fs.rmSync(bareA, { recursive: true, force: true });
+fs.rmSync(bareB, { recursive: true, force: true });
+fs.rmSync(scratch, { recursive: true, force: true });
+
 cdp.ws.close();
 wb.ws.close();
 finish('WALKTHROUGH');

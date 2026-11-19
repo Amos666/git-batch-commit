@@ -22,6 +22,8 @@ import type {
   OperationState,
   PanelState,
   PartialSelection,
+  PushPreviewEntry,
+  PushRunResult,
   RepoStatus,
   UnavailableReason,
 } from '../../protocol/models';
@@ -61,7 +63,20 @@ export type Dialog =
   | { kind: 'deleteChangelist'; id: string }
   | { kind: 'modeSwitch'; mode: CommitMode; preview: ModeMigrationPreview }
   | { kind: 'changelistConflict'; refs: ChangelistFileRef[]; targetId: string; conflict: NonNullable<ProtocolError['conflictContext']> }
-  | { kind: 'push'; repoIds: string[] }
+  | {
+      kind: 'push';
+      /** all roots with a branch, in tree order */
+      repoIds: string[];
+      checked: Record<string, boolean>;
+      expanded: Record<string, boolean>;
+      /** repoId → remote for roots without upstream */
+      remoteChoice: Record<string, string>;
+      preview: Record<string, PushPreviewEntry>;
+      previewLoading: boolean;
+      results: Record<string, PushRunResult>;
+      tags: boolean;
+      forceConfirm?: boolean;
+    }
   | { kind: 'amendPushed' }
   | { kind: 'checksReport'; report: CheckReport; pushAfter: boolean; postCommit?: boolean; repoIds?: string[] }
   | { kind: 'abortMerge'; repoId: string }
@@ -230,8 +245,16 @@ export interface PanelStore {
   compareBranch: (name: string) => Promise<void>;
   pullRepo: (repoId: string) => Promise<void>;
   pushRepo: (repoId: string) => Promise<void>;
-  requestPush: (repoIds: string[]) => void;
+  requestPush: (checkedIds: string[], includeAhead?: boolean) => void;
   confirmPush: () => Promise<void>;
+  togglePushRepo: (repoId: string) => void;
+  togglePushExpand: (repoId: string) => void;
+  setPushRemote: (repoId: string, remote: string) => void;
+  setPushTags: (tags: boolean) => void;
+  requestForcePush: () => void;
+  cancelForcePush: () => void;
+  confirmForcePush: () => Promise<void>;
+  retryPushRepo: (repoId: string) => Promise<void>;
 
   // shelf actions
   openShelfTab: (repoId?: string) => Promise<void>;

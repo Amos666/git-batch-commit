@@ -180,10 +180,23 @@ export const STYLES = `
 .gbc-checklist li { padding: 0; }
 .gbc-checklist-item { display: flex; align-items: center; gap: 6px; padding: 3px 8px; cursor: pointer; }
 .gbc-checklist-item span { overflow: hidden; text-overflow: ellipsis; }
-.gbc-pushlist { list-style: none; margin: 4px 0; padding: 0; }
-.gbc-pushlist li { display: flex; align-items: center; gap: 8px; padding: 4px 0; flex-wrap: wrap; }
-.gbc-pushref { color: var(--gbc-fg-muted); font-size: var(--gbc-font-size-small); }
-.gbc-push-note { color: var(--gbc-warn-border); font-size: var(--gbc-font-size-small); }
+.gbc-pushlist { list-style: none; margin: 4px 0; padding: 0; max-height: 320px; overflow: auto; }
+.gbc-pushlist > li { padding: 2px 0; border-bottom: 1px solid var(--gbc-border); }
+.gbc-pushrow { display: flex; align-items: center; gap: 6px; min-height: 24px; }
+.gbc-pushref { color: var(--gbc-fg-muted); font-size: var(--gbc-font-size-small); overflow: hidden; text-overflow: ellipsis; }
+.gbc-pushremote { max-width: 120px; }
+.gbc-pushstate { display: inline-flex; width: 16px; flex: none; margin-left: auto; }
+.gbc-push-note { color: var(--gbc-warn-border); font-size: var(--gbc-font-size-small); padding-left: 40px; }
+.gbc-pushcommits { list-style: none; margin: 2px 0 4px; padding: 0 0 0 40px; max-height: 160px; overflow: auto; }
+.gbc-pushcommit { display: flex; align-items: center; gap: 6px; padding: 1px 0; font-size: var(--gbc-font-size-small); }
+.gbc-pushcommit-hash { color: var(--gbc-link); font-family: var(--vscode-editor-font-family, monospace); flex: none; }
+.gbc-pushcommit-msg { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+.gbc-pushcommit-author { color: var(--gbc-fg-muted); flex: none; }
+.gbc-pushcommit-muted { color: var(--gbc-fg-muted); font-size: var(--gbc-font-size-small); padding: 1px 0; }
+.gbc-pusherror { display: flex; align-items: center; gap: 8px; margin: 2px 0 4px 40px; padding: 3px 6px; background: var(--gbc-error-bg); border-left: 3px solid var(--gbc-error-border); color: var(--gbc-error); font-size: var(--gbc-font-size-small); }
+.gbc-pusherror span { flex: 1; min-width: 0; }
+.gbc-pushsummary { padding: 4px 0 0; color: var(--gbc-fg-muted); font-size: var(--gbc-font-size-small); }
+.gbc-pushtags { display: inline-flex; align-items: center; gap: 6px; font-size: var(--gbc-font-size-small); color: var(--gbc-fg-muted); }
 .gbc-checkreport { list-style: none; margin: 4px 0; padding: 0; }
 .gbc-checkreport li { display: flex; align-items: center; gap: 8px; padding: 3px 0; flex-wrap: wrap; }
 .gbc-checkstatus { font-size: var(--gbc-font-size-small); border-radius: 3px; padding: 0 6px; }

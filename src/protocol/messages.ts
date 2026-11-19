@@ -16,6 +16,9 @@ import type {
   OperationState,
   PanelState,
   PartialSelection,
+  PushPreviewEntry,
+  PushRunRequest,
+  PushRunResult,
   RepoStatus,
   UnavailableReason,
 } from './models';
@@ -141,7 +144,9 @@ export interface RequestMap {
   'branch.rename': { params: { repoId: string; from: string; to: string }; result: void };
   'branch.compare': { params: { repoId: string; name: string }; result: void };
   'repo.pull': { params: { repoId: string }; result: void };
-  'repo.push': { params: { repoId: string }; result: void };
+  'repo.push': { params: { repoId: string; remote?: string }; result: void };
+  'push.preview': { params: { repoIds: string[] }; result: PushPreviewEntry[] };
+  'push.run': { params: PushRunRequest; result: PushRunResult[] };
   'log.list': { params: { repoId: string; skip?: number; author?: string; grep?: string }; result: LogPage };
   'log.cherryPick': { params: { repoId: string; oid: string }; result: void };
   'log.revert': { params: { repoId: string; oid: string }; result: void };
@@ -265,7 +270,6 @@ export function normalizeCommitRequest(params: CommitRequest | CommitRequestV2):
       amend: params.amend,
       signoff: params.signoff,
       noVerify: params.noVerify,
-      pushAfter: params.pushAfter,
     },
     expectedStaged: params.expectedStaged,
   };

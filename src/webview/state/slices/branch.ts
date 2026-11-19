@@ -1,5 +1,7 @@
 import type { ProtocolError } from '../../../protocol/errors';
-import type { Slice } from '../types';
+import type { PushRunResult, PushTarget } from '../../../protocol/models';
+import { STRINGS } from '../../strings/en';
+import type { Dialog, PanelStore, SetFn, Slice, SliceCtx } from '../types';
 
 export const branchSlice: Slice = (set, get, ctx) => ({
   branchPicker: null,
@@ -157,26 +159,212 @@ export const branchSlice: Slice = (set, get, ctx) => ({
     }
   },
 
-  requestPush: (repoIds) => {
+  requestPush: (checkedIds, includeAhead = true) => {
+    const s = get();
+    const repoIds = s.repoOrder.filter((id) => s.repos[id]?.branch.name);
     if (repoIds.length === 0) {
       return;
     }
-    set({ dialog: { kind: 'push', repoIds }, dialogBusy: false, dialogError: undefined });
+    const checked: Record<string, boolean> = {};
+    for (const id of repoIds) {
+      const ahead = s.repos[id]?.branch.ahead ?? 0;
+      checked[id] = checkedIds.includes(id) || (includeAhead && ahead > 0);
+    }
+    set({
+      dialog: {
+        kind: 'push',
+        repoIds,
+        checked,
+        expanded: {},
+        remoteChoice: {},
+        preview: {},
+        previewLoading: true,
+        results: {},
+        tags: false,
+      },
+      dialogBusy: false,
+      dialogError: undefined,
+    });
+    void (async () => {
+      try {
+        const entries = await ctx.request('push.preview', { repoIds });
+        const cur = get().dialog;
+        if (cur?.kind !== 'push') {
+          return;
+        }
+        const preview = { ...cur.preview };
+        const remoteChoice = { ...cur.remoteChoice };
+        for (const entry of entries) {
+          preview[entry.repoId] = entry;
+          const only = entry.remotes.length === 1 ? entry.remotes[0] : undefined;
+          if (!entry.upstream && only && !remoteChoice[entry.repoId]) {
+            remoteChoice[entry.repoId] = only;
+          }
+        }
+        set({ dialog: { ...cur, preview, remoteChoice, previewLoading: false } });
+      } catch {
+        const cur = get().dialog;
+        if (cur?.kind === 'push') {
+          set({ dialog: { ...cur, previewLoading: false } });
+        }
+      }
+    })();
   },
 
-  confirmPush: async () => {
+  togglePushRepo: (repoId) => {
+    const dialog = get().dialog;
+    if (dialog?.kind === 'push' && !get().dialogBusy) {
+      set({ dialog: { ...dialog, checked: { ...dialog.checked, [repoId]: !dialog.checked[repoId] } } });
+    }
+  },
+
+  togglePushExpand: (repoId) => {
+    const dialog = get().dialog;
+    if (dialog?.kind === 'push') {
+      set({ dialog: { ...dialog, expanded: { ...dialog.expanded, [repoId]: !dialog.expanded[repoId] } } });
+    }
+  },
+
+  setPushRemote: (repoId, remote) => {
+    const dialog = get().dialog;
+    if (dialog?.kind === 'push') {
+      set({ dialog: { ...dialog, remoteChoice: { ...dialog.remoteChoice, [repoId]: remote } }, dialogError: undefined });
+    }
+  },
+
+  setPushTags: (tags) => {
+    const dialog = get().dialog;
+    if (dialog?.kind === 'push') {
+      set({ dialog: { ...dialog, tags } });
+    }
+  },
+
+  requestForcePush: () => {
     const dialog = get().dialog;
     if (dialog?.kind !== 'push' || get().dialogBusy) {
       return;
     }
-    set({ dialogBusy: true });
+    if (!dialog.repoIds.some((id) => dialog.checked[id])) {
+      set({ dialogError: STRINGS.dialogs.pushNothingSelected });
+      return;
+    }
+    set({ dialog: { ...dialog, forceConfirm: true }, dialogError: undefined });
+  },
+
+  cancelForcePush: () => {
+    const dialog = get().dialog;
+    if (dialog?.kind === 'push') {
+      set({ dialog: { ...dialog, forceConfirm: false } });
+    }
+  },
+
+  confirmPush: async () => {
+    await runPushSelection(get, set, ctx, false);
+  },
+
+  confirmForcePush: async () => {
+    await runPushSelection(get, set, ctx, true);
+  },
+
+  retryPushRepo: async (repoId) => {
+    const dialog = get().dialog;
+    if (dialog?.kind !== 'push' || get().dialogBusy) {
+      return;
+    }
+    const targets = resolvePushTargets(get, dialog, [repoId]);
+    if (!targets) {
+      set({ dialogError: STRINGS.dialogs.pushChooseRemoteFor(get().repos[repoId]?.repo.name ?? repoId) });
+      return;
+    }
+    set({ dialogBusy: true, dialogError: undefined });
     try {
-      for (const repoId of dialog.repoIds) {
-        await ctx.request('repo.push', { repoId });
-      }
-      set({ dialog: null, dialogBusy: false });
+      const results = await ctx.request('push.run', {
+        repoIds: [repoId],
+        targets,
+        tags: dialog.tags || undefined,
+      });
+      mergePushResults(get, set, results);
     } catch (err) {
       set({ dialogBusy: false, dialogError: (err as ProtocolError).message, lastError: err as ProtocolError });
     }
   },
 });
+
+type PushDialog = Extract<Dialog, { kind: 'push' }>;
+
+function resolvePushTargets(get: () => PanelStore, dialog: PushDialog, repoIds: string[]): Record<string, PushTarget> | undefined {
+  const targets: Record<string, PushTarget> = {};
+  for (const id of repoIds) {
+    const status = get().repos[id];
+    if (!status?.branch.name) {
+      continue;
+    }
+    if (!status.branch.upstream) {
+      const entry = dialog.preview[id];
+      const only = entry?.remotes.length === 1 ? entry.remotes[0] : undefined;
+      const remote = dialog.remoteChoice[id] ?? only;
+      if (!remote) {
+        // Preview remotes can lag behind `git remote add`; with none known, let the
+        // host resolve from live state at push time. Only a known-ambiguous list blocks.
+        if (entry && entry.remotes.length > 1) {
+          return undefined;
+        }
+        continue;
+      }
+      targets[id] = { remote, branch: status.branch.name };
+    }
+  }
+  return targets;
+}
+
+async function runPushSelection(get: () => PanelStore, set: SetFn, ctx: SliceCtx, force: boolean): Promise<void> {
+  const dialog = get().dialog;
+  if (dialog?.kind !== 'push' || get().dialogBusy) {
+    return;
+  }
+  const selected = dialog.repoIds.filter((id) => dialog.checked[id]);
+  if (selected.length === 0) {
+    set({ dialogError: STRINGS.dialogs.pushNothingSelected });
+    return;
+  }
+  const targets = resolvePushTargets(get, dialog, selected);
+  if (!targets) {
+    const missing = selected.find((id) => {
+      const status = get().repos[id];
+      return status && !status.branch.upstream && !dialog.remoteChoice[id] && dialog.preview[id]?.remotes.length !== 1;
+    });
+    const name = missing ? get().repos[missing]?.repo.name : '';
+    set({ dialogError: STRINGS.dialogs.pushChooseRemoteFor(name ?? '') });
+    return;
+  }
+  set({ dialogBusy: true, dialogError: undefined, dialog: { ...dialog, forceConfirm: false } });
+  try {
+    const results = await ctx.request('push.run', {
+      repoIds: selected,
+      targets,
+      tags: dialog.tags || undefined,
+      force: force || undefined,
+    });
+    mergePushResults(get, set, results);
+  } catch (err) {
+    set({ dialogBusy: false, dialogError: (err as ProtocolError).message, lastError: err as ProtocolError });
+  }
+}
+
+function mergePushResults(get: () => PanelStore, set: SetFn, results: PushRunResult[]): void {
+  const cur = get().dialog;
+  if (cur?.kind !== 'push') {
+    set({ dialogBusy: false });
+    return;
+  }
+  const merged = { ...cur.results };
+  for (const result of results) {
+    merged[result.repoId] = result;
+  }
+  const anyFailed = Object.values(merged).some((r) => !r.ok);
+  if (anyFailed) {
+    set({ dialog: { ...cur, results: merged, forceConfirm: false }, dialogBusy: false });
+  } else {
+    set({ dialog: null, dialogBusy: false, dialogError: undefined });
+  }
+}

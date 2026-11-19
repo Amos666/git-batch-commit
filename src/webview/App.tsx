@@ -128,7 +128,7 @@ function useKeymap(): void {
           break;
         case 'push':
           e.preventDefault();
-          s.requestPush(s.repoOrder.filter((id) => s.repos[id]?.branch.oid));
+          s.requestPush([]);
           break;
         case 'diff': {
           const first = refs[0];

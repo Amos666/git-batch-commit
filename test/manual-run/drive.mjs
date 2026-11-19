@@ -45,9 +45,9 @@ check('ctrl+click marks rows included', await ev(`(doc) =>
 
 await setInput(ev, '[data-testid="commit-message"]', 'drive: changelist commit');
 await sleep(300);
-check('commit enabled with selection + message', await ev(`(doc) => doc.querySelector('[data-testid="commit-button-main"]')?.disabled === false`));
+check('commit enabled with selection + message', await ev(`(doc) => doc.querySelector('[data-testid="commit-button"]')?.disabled === false`));
 await shot(wb, 'drive1-before-commit');
-await clickTestId(ev, 'commit-button-main');
+await clickTestId(ev, 'commit-button');
 const rowGone = (p) => ev(`(doc) => !doc.querySelector('[data-testid="file-row"][data-repo="${picks.repoId}"][data-path="${p}"]')`);
 check('committed files leave the tree', await waitFor(async () => (await rowGone(picks.paths[0])) && (await rowGone(picks.paths[1]))));
 check('message cleared on success', await waitFor(() => ev(`(doc) => (doc.querySelector('[data-testid="commit-message"]')?.value ?? 'x') === ''`)));

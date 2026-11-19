@@ -4,7 +4,7 @@ import { STRINGS } from '../../strings/en';
 import { usePanelStore } from '../../state/StoreContext';
 import type { Dialog } from '../../state/types';
 import { Icon } from '../../theme/icons/Icon';
-import { Checkbox } from '../primitives';
+import { Checkbox, SplitButton } from '../primitives';
 
 const D = STRINGS.dialogs;
 const A = STRINGS.actions;
@@ -488,40 +488,190 @@ function ChangelistConflictDialog({ dialog }: { dialog: Extract<Dialog, { kind: 
 
 function PushDialog({ dialog }: { dialog: Extract<Dialog, { kind: 'push' }> }) {
   const repos = usePanelStore((s) => s.repos);
+  const operations = usePanelStore((s) => s.operations);
+  const dialogBusy = usePanelStore((s) => s.dialogBusy);
   const confirmPush = usePanelStore((s) => s.confirmPush);
   const closeDialog = usePanelStore((s) => s.closeDialog);
+  const togglePushRepo = usePanelStore((s) => s.togglePushRepo);
+  const togglePushExpand = usePanelStore((s) => s.togglePushExpand);
+  const setPushRemote = usePanelStore((s) => s.setPushRemote);
+  const setPushTags = usePanelStore((s) => s.setPushTags);
+  const requestForcePush = usePanelStore((s) => s.requestForcePush);
+  const cancelForcePush = usePanelStore((s) => s.cancelForcePush);
+  const confirmForcePush = usePanelStore((s) => s.confirmForcePush);
+  const retryPushRepo = usePanelStore((s) => s.retryPushRepo);
+  const cancelRemaining = usePanelStore((s) => s.cancelRemaining);
+  const selected = dialog.repoIds.filter((id) => dialog.checked[id]);
+  const results = Object.values(dialog.results);
+  const pushed = results.filter((r) => r.ok).length;
+  const failed = results.filter((r) => !r.ok).length;
+
+  if (dialog.forceConfirm) {
+    const names = selected.map((id) => repos[id]?.repo.name ?? id).join(', ');
+    return (
+      <Shell
+        title={D.forcePushTitle}
+        testId="dialog-push"
+        footer={
+          <>
+            <Btn label={A.cancel} onClick={cancelForcePush} />
+            <Btn label={D.forcePush} primary danger testId="dialog-ok" onClick={() => void confirmForcePush()} />
+          </>
+        }
+      >
+        <p data-testid="forcepush-confirm">{D.forcePushBody(names)}</p>
+      </Shell>
+    );
+  }
+
   return (
     <Shell
       title={D.pushTitle}
       testId="dialog-push"
       footer={
         <>
-          <Btn label={A.cancel} onClick={closeDialog} />
-          <Btn label={A.push} primary testId="dialog-ok" onClick={() => void confirmPush()} />
+          <label className="gbc-pushtags">
+            <span>{D.pushTagsLabel}</span>
+            <select
+              className="gbc-input gbc-select"
+              data-testid="push-tags"
+              value={dialog.tags ? 'all' : 'none'}
+              disabled={dialogBusy}
+              onChange={(e) => setPushTags(e.target.value === 'all')}
+            >
+              <option value="none">{D.pushTagsNone}</option>
+              <option value="all">{D.pushTagsAll}</option>
+            </select>
+          </label>
+          <span className="gbc-toolbar-spacer" />
+          {dialogBusy ? (
+            <button type="button" className="gbc-btn" data-testid="push-cancel-remaining" onClick={cancelRemaining}>
+              {A.cancelRemaining}
+            </button>
+          ) : (
+            <Btn label={A.cancel} onClick={closeDialog} />
+          )}
+          <SplitButton
+            label={A.push}
+            testId="dialog-ok"
+            busy={dialogBusy}
+            disabled={selected.length === 0}
+            onClick={() => void confirmPush()}
+            menu={[{ label: D.forcePush, disabled: selected.length === 0, onClick: requestForcePush }]}
+          />
         </>
       }
     >
-      <p>{D.pushBody}</p>
       <ul className="gbc-pushlist" data-testid="push-repos">
         {dialog.repoIds.map((id) => {
           const status = repos[id];
           if (!status) {
             return null;
           }
+          const entry = dialog.preview[id];
           const { branch } = status;
+          const ahead = entry?.ahead ?? branch.ahead;
+          const result = dialog.results[id];
+          const pushing = operations[id]?.phase === 'pushing';
+          const expanded = !!dialog.expanded[id];
+          const remotes = entry?.remotes ?? [];
           return (
-            <li key={id} data-repo={id}>
-              <span className="gbc-repo-name">{status.repo.name}</span>
-              <span className="gbc-pushref">
-                {branch.name ?? STRINGS.branch.detached(branch.oid?.slice(0, 7) ?? '')}
-                {branch.upstream ? ` → ${branch.upstream}` : ''}
-              </span>
-              {branch.ahead !== undefined && branch.ahead > 0 && <span className="gbc-ahead">↑{branch.ahead}</span>}
-              {!branch.upstream && <span className="gbc-push-note">{D.pushNoUpstream}</span>}
+            <li key={id} data-repo={id} data-testid="push-repo">
+              <div className="gbc-pushrow">
+                <button
+                  type="button"
+                  className="gbc-chevron"
+                  data-testid="push-expand"
+                  aria-label={status.repo.name}
+                  onClick={() => togglePushExpand(id)}
+                >
+                  <Icon name={expanded ? 'chevronDown' : 'chevronRight'} size={12} />
+                </button>
+                <Checkbox
+                  checked={!!dialog.checked[id]}
+                  onChange={() => togglePushRepo(id)}
+                  label={status.repo.name}
+                  testId="push-check"
+                  disabled={dialogBusy}
+                />
+                <span className="gbc-repo-name">{status.repo.name}</span>
+                <span className="gbc-pushref">
+                  {branch.name}
+                  {branch.upstream ? ` → ${branch.upstream}` : ''}
+                </span>
+                {ahead !== undefined && ahead > 0 && <span className="gbc-ahead">↑{ahead}</span>}
+                {!branch.upstream && (
+                  <select
+                    className="gbc-input gbc-select gbc-pushremote"
+                    data-testid="push-remote"
+                    value={dialog.remoteChoice[id] ?? ''}
+                    disabled={dialogBusy || remotes.length === 0}
+                    onChange={(e) => setPushRemote(id, e.target.value)}
+                  >
+                    <option value="" disabled>
+                      {D.pushChooseRemote}
+                    </option>
+                    {remotes.map((r) => (
+                      <option key={r} value={r}>
+                        {r}
+                      </option>
+                    ))}
+                  </select>
+                )}
+                <span className="gbc-pushstate" data-testid="push-state">
+                  {pushing ? (
+                    <span className="gbc-spinner" aria-hidden />
+                  ) : result?.ok ? (
+                    <Icon name="check" size={12} />
+                  ) : result ? (
+                    <Icon name="close" size={12} />
+                  ) : null}
+                </span>
+              </div>
+              {!branch.upstream && <div className="gbc-push-note">{D.pushNoUpstream}</div>}
+              {expanded && (
+                <ul className="gbc-pushcommits" data-testid="push-commits">
+                  {dialog.previewLoading && !entry ? (
+                    <li className="gbc-pushcommit-muted">{D.pushLoading}</li>
+                  ) : entry?.previewUnavailable ? (
+                    <li className="gbc-pushcommit-muted">{D.pushPreviewUnavailable}</li>
+                  ) : entry && entry.commits.length > 0 ? (
+                    <>
+                      {entry.commits.slice(0, 10).map((c) => (
+                        <li key={c.hash} className="gbc-pushcommit">
+                          <span className="gbc-pushcommit-hash">{c.hash.slice(0, 7)}</span>
+                          <span className="gbc-pushcommit-msg">{c.message.split('\n')[0]}</span>
+                          {c.authorName && <span className="gbc-pushcommit-author">{c.authorName}</span>}
+                        </li>
+                      ))}
+                      {entry.commits.length > 10 && (
+                        <li className="gbc-pushcommit-muted">{D.pushMore(entry.commits.length - 10)}</li>
+                      )}
+                    </>
+                  ) : (
+                    <li className="gbc-pushcommit-muted">{D.pushNoCommits}</li>
+                  )}
+                </ul>
+              )}
+              {result && !result.ok && (
+                <div className="gbc-pusherror" data-testid="push-error">
+                  <span>{result.skipped === 'cancelled' ? STRINGS.errors.CANCELLED : (result.error?.message ?? STRINGS.errors.GENERIC)}</span>
+                  {!dialogBusy && (
+                    <button type="button" className="gbc-btn gbc-btn-sm" data-testid="push-retry" onClick={() => void retryPushRepo(id)}>
+                      {A.retry}
+                    </button>
+                  )}
+                </div>
+              )}
             </li>
           );
         })}
       </ul>
+      {results.length > 0 && (
+        <div className="gbc-pushsummary" data-testid="push-summary">
+          {D.pushSummary(pushed, failed)}
+        </div>
+      )}
     </Shell>
   );
 }

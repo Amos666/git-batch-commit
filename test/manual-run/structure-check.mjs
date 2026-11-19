@@ -64,11 +64,11 @@ await escape(cdp);
 // 6) commit disabled reason is visible (empty message, files checked by default)
 const reason = await ev(`(doc) => doc.querySelector('[data-testid="commit-disabled-reason"]')?.textContent ?? null`);
 check('disabled reason visible: ' + STRINGS.disabled.noMessage, reason === STRINGS.disabled.noMessage);
-check('Commit button disabled while reason shown', await ev(`(doc) => doc.querySelector('[data-testid="commit-button-main"]')?.disabled === true`));
+check('Commit button disabled while reason shown', await ev(`(doc) => doc.querySelector('[data-testid="commit-button"]')?.disabled === true`));
 await setInput(ev, '[data-testid="commit-message"]', 'structure check message');
 await sleep(400);
 check('reason clears once message entered', await ev(`(doc) => !doc.querySelector('[data-testid="commit-disabled-reason"]')`));
-check('Commit button enabled with message + selection', await ev(`(doc) => doc.querySelector('[data-testid="commit-button-main"]')?.disabled === false`));
+check('Commit button enabled with message + selection', await ev(`(doc) => doc.querySelector('[data-testid="commit-button"]')?.disabled === false`));
 await setInput(ev, '[data-testid="commit-message"]', '');
 await sleep(300);
 
@@ -96,12 +96,11 @@ check('mode switch asks for confirmation', modeTitle === STRINGS.dialogs.modeEna
 await clickTestId(ev, 'dialog-close');
 await sleep(300);
 
-// 9) Commit and Push split menu
-await clickTestId(ev, 'commit-button-arrow');
-await sleep(300);
-const pushItem = await ev(`(doc) => Array.from(doc.querySelectorAll('[role="menuitem"], .gbc-menu-item')).map(b => b.textContent.trim()).find(t => t.includes('Commit and Push')) ?? null`);
-check('split button offers Commit and Push…', pushItem === STRINGS.actions.commitAndPush);
-await escape(cdp);
+// 9) Commit and Push is a visible button next to Commit
+check('Commit and Push button visible', await ev(`(doc) => {
+  const b = doc.querySelector('[data-testid="commit-push-button"]');
+  return !!b && b.textContent.trim() === ${JSON.stringify(STRINGS.actions.commitAndPush)};
+}`));
 
 // 10) options gear panel: Before Commit checks list, honest unavailable/limited badges
 await clickTestId(ev, 'message-options');

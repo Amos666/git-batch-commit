@@ -12,6 +12,7 @@ import { CommitTranslator } from '../core/commitTranslator';
 import { InclusionModel } from '../core/inclusionModel';
 import { MiniRunner, validateBranchName, validatePath } from '../core/miniRunner';
 import { OperationTracker } from '../core/operationTracker';
+import { pickRemote } from '../core/pushTarget';
 import { StatusService } from '../core/statusService';
 import { TerminalBridge } from '../core/terminalBridge';
 import { CHECK_AVAILABILITY, detectCapabilities } from '../kernel/capabilities';
@@ -21,7 +22,7 @@ import { makeError, mapGitErrorCode } from '../protocol/errors';
 import type { ProtocolError } from '../protocol/errors';
 import { normalizeCommitRequest } from '../protocol/messages';
 import type { BranchRef, EventMap, InitResult, LogPage, PanelSettings } from '../protocol/messages';
-import type { ChangelistFileRef, ChangelistState, CommitOptionsState, PanelState, UnavailableReason } from '../protocol/models';
+import type { ChangelistFileRef, ChangelistState, CommitOptionsState, PanelState, PushPreviewEntry, UnavailableReason } from '../protocol/models';
 import { ChangelistService } from '../services/changelistService';
 import type { ChangelistStorage } from '../services/changelistService';
 import { ChecksService } from '../services/checksService';
@@ -574,10 +575,16 @@ export class Backend implements vscode.Disposable {
       if (!head?.name) {
         throw makeError('GENERIC', 'Cannot push from detached HEAD; check out a branch first');
       }
+      const pick = pickRemote(head.upstream?.remote, head.upstream ? [] : repo.state.remotes.map((r) => r.name), params.remote);
+      if (pick.status !== 'ok') {
+        throw pick.status === 'none'
+          ? makeError('NO_REMOTE', 'No remote is configured for this repository; add one before pushing')
+          : makeError('NO_REMOTE', 'Multiple remotes are configured; choose a push target in the Push dialog');
+      }
       s.tracker.start(params.repoId, 'push');
       s.tracker.update(params.repoId, 'pushing');
       try {
-        await repo.push(head.upstream?.remote, head.name, head.upstream ? false : true);
+        await repo.push(pick.remote, head.name, !head.upstream);
         s.tracker.end(params.repoId, 'done');
       } catch (err) {
         const error = toProtocolError(err, 'push');
@@ -585,6 +592,51 @@ export class Backend implements vscode.Disposable {
         throw error;
       }
       s.status.refresh();
+    });
+    gateway.register('push.preview', async (params): Promise<PushPreviewEntry[]> => {
+      const s = await this.ready();
+      const entries: PushPreviewEntry[] = [];
+      for (const repoId of params.repoIds) {
+        const repo = s.registry.get(repoId);
+        if (!repo) {
+          continue;
+        }
+        const head = repo.state.HEAD;
+        const entry: PushPreviewEntry = {
+          repoId,
+          branch: head?.name,
+          upstream: head?.upstream?.name,
+          ahead: head?.ahead,
+          remotes: repo.state.remotes.map((r) => r.name),
+          commits: [],
+          hasMore: false,
+          previewUnavailable: !repo.log,
+        };
+        if (head?.name && repo.log) {
+          try {
+            const max = head.upstream ? 200 : 10;
+            const range = head.upstream ? `${head.upstream.name}..HEAD` : 'HEAD';
+            const commits = await repo.log({ range, maxEntries: max + 1 });
+            entry.hasMore = commits.length > max;
+            entry.commits = commits.slice(0, max).map((c) => ({
+              hash: c.hash,
+              message: c.message,
+              authorName: c.authorName,
+              authorDate: c.authorDate?.getTime(),
+            }));
+          } catch {
+            // preview is best-effort; pushing still works without it
+          }
+        }
+        entries.push(entry);
+      }
+      return entries;
+    });
+    gateway.register('push.run', async (params) => {
+      const s = await this.ready();
+      const results = await s.orchestrator.runPush(params);
+      s.status.refresh();
+      return results;
     });
     gateway.register('log.list', async (params): Promise<LogPage> => {
       const s = await this.ready();

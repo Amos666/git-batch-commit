@@ -47,7 +47,7 @@ await sleep(300);
 // --- pre-commit: issues block the commit behind the report dialog ---
 await setInput(ev, '[data-testid="commit-message"]', 'checks smoke pre-commit');
 await sleep(300);
-await clickTestId(ev, 'commit-button-main');
+await clickTestId(ev, 'commit-button');
 check('pre-commit checks report opens', await waitFor(reportDialog));
 const todoRow = await ev(`(doc) => {
   const li = doc.querySelector('[data-testid="checks-report"] li[data-check="todo"]');
@@ -88,7 +88,7 @@ await clickTestId(ev, 'tool-refresh');
 check('second TODO change visible', await waitFor(modifiedRow));
 await setInput(ev, '[data-testid="commit-message"]', 'checks smoke post-commit');
 await sleep(300);
-await clickTestId(ev, 'commit-button-main');
+await clickTestId(ev, 'commit-button');
 check('post-commit report opens', await waitFor(reportDialog));
 check('commit already landed before the post-commit report', gitA('log', '-1', '--format=%s').trim() === 'checks smoke post-commit');
 const postTodo = await ev(`(doc) => doc.querySelector('[data-testid="checks-report"] li[data-check="todo"]')?.getAttribute('data-status') ?? null`);

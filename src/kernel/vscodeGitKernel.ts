@@ -112,6 +112,9 @@ class VscodeKernelRepo implements KernelRepo {
       get refs() {
         return repo.state.refs;
       },
+      get remotes() {
+        return repo.state.remotes;
+      },
       get mergeChanges() {
         return self.mapChanges(repo.state.mergeChanges);
       },

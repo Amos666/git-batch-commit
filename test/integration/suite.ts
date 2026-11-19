@@ -1046,6 +1046,82 @@ export async function run(): Promise<void> {
     fs.rmSync(path.join(repoAPath, 'dv-todo.txt'));
     ok('dual-mode partial commit: changelist hunk selection + staging line stagePartial end-to-end');
 
+    // 49. batch push: no-upstream auto remote, continue-on-error, explicit targets, NO_REMOTE, outgoing preview
+    const gitB = (...args: string[]) => execFileSync('git', args, { cwd: repoBPath, stdio: 'pipe' });
+    const bareA = path.join(fixtureDir, '.pushA.git');
+    const bareB = path.join(fixtureDir, '.pushB.git');
+    execFileSync('git', ['init', '--bare', '-b', 'main', bareA], { stdio: 'pipe' });
+    execFileSync('git', ['init', '--bare', '-b', 'main', bareB], { stdio: 'pipe' });
+    gitA('remote', 'add', 'push-origin', bareA);
+    gitB('remote', 'add', 'push-origin', bareB);
+    gitA('push', '-u', 'push-origin', 'main');
+    fs.writeFileSync(path.join(repoAPath, 'push-a.txt'), 'a\n');
+    gitA('add', 'push-a.txt');
+    gitA('commit', '-m', 'push: outgoing A');
+    fs.writeFileSync(path.join(repoBPath, 'push-b.txt'), 'b\n');
+    gitB('add', 'push-b.txt');
+    gitB('commit', '--no-verify', '-m', 'push: outgoing B');
+    await waitFor(() => (repoA.state.HEAD?.ahead ?? 0) > 0, 'repoA ahead of push-origin');
+    const kernelRepoA = registry.get(idA);
+    const outgoing = await kernelRepoA?.log?.({ range: 'push-origin/main..HEAD' });
+    assert.strictEqual(outgoing?.length, 1, 'outgoing preview range must list exactly the unpushed commit');
+    assert.ok(outgoing?.[0]?.message.includes('outgoing A'));
+    // repoB has no upstream but exactly one remote → auto-resolved, upstream set by push
+    const pushBatch = await orchestrator.runPush({ repoIds: [idB, idA] });
+    assert.deepStrictEqual(pushBatch.map((r) => r.ok), [true, true], `batch push failed: ${JSON.stringify(pushBatch)}`);
+    await waitFor(() => repoB.state.HEAD?.upstream !== undefined, 'repoB upstream set by push');
+    assert.strictEqual(
+      execFileSync('git', ['--git-dir', bareB, 'rev-parse', 'main'], { stdio: 'pipe' }).toString().trim(),
+      gitB('rev-parse', 'HEAD').toString().trim(),
+      'bare B must receive the pushed commit',
+    );
+    ok('batch push: no-upstream root auto-resolves its only remote and sets upstream; outgoing range preview');
+
+    // diverge bare B via a scratch clone → repoB push rejected, repoA must still push (continue-on-error)
+    const scratch = path.join(fixtureDir, '.pushScratch');
+    execFileSync('git', ['clone', '-q', bareB, scratch], { stdio: 'pipe' });
+    fs.writeFileSync(path.join(scratch, 'remote-side.txt'), 'r\n');
+    execFileSync('git', ['add', '.'], { cwd: scratch, stdio: 'pipe' });
+    execFileSync('git', ['commit', '-q', '-m', 'remote side'], { cwd: scratch, stdio: 'pipe' });
+    execFileSync('git', ['push', '-q', 'origin', 'main'], { cwd: scratch, stdio: 'pipe' });
+    fs.writeFileSync(path.join(repoBPath, 'push-b2.txt'), 'b2\n');
+    gitB('add', 'push-b2.txt');
+    gitB('commit', '--no-verify', '-m', 'push: outgoing B2');
+    fs.writeFileSync(path.join(repoAPath, 'push-a2.txt'), 'a2\n');
+    gitA('add', 'push-a2.txt');
+    gitA('commit', '-m', 'push: outgoing A2');
+    // behind/ahead derive from local tracking refs: fetch so repoB sees the divergence
+    gitB('fetch', '-q', 'push-origin');
+    await waitFor(() => (repoB.state.HEAD?.behind ?? 0) > 0, 'repoB behind diverged remote');
+    const mixed = await orchestrator.runPush({ repoIds: [idB, idA] });
+    assert.strictEqual(mixed[0]?.ok, false, 'diverged repoB must fail');
+    assert.strictEqual(mixed[0]?.error?.code, 'PUSH_REJECTED');
+    assert.strictEqual(mixed[1]?.ok, true, 'repoA must still push after repoB failed');
+    ok('batch push continues past a rejected repo (per-repo results, no whole-batch abort)');
+
+    // no remote at all → NO_REMOTE; several remotes without a choice → NO_REMOTE; explicit target honored
+    const noRemote = await orchestrator.runPush({ repoIds: [idC] });
+    assert.strictEqual(noRemote[0]?.ok, false);
+    assert.strictEqual(noRemote[0]?.error?.code, 'NO_REMOTE');
+    const gitC2 = (...args: string[]) => execFileSync('git', args, { cwd: repoCPath, stdio: 'pipe' });
+    gitC2('remote', 'add', 'r-one', bareA);
+    gitC2('remote', 'add', 'r-two', bareB);
+    await waitFor(() => repoC.state.remotes.length === 2, 'repoC remotes discovered');
+    const ambiguous = await orchestrator.runPush({ repoIds: [idC] });
+    assert.strictEqual(ambiguous[0]?.error?.code, 'NO_REMOTE');
+    assert.ok(/Multiple remotes/.test(ambiguous[0]?.error?.message ?? ''));
+    const targeted = await orchestrator.runPush({ repoIds: [idC], targets: { [idC]: { remote: 'r-one', branch: 'main' } } });
+    assert.notStrictEqual(targeted[0]?.error?.code, 'NO_REMOTE', 'explicit target must bypass remote resolution');
+    ok('push target resolution: NO_REMOTE without remotes, ambiguous choice required, explicit target honored');
+
+    gitA('remote', 'remove', 'push-origin');
+    gitB('remote', 'remove', 'push-origin');
+    gitC2('remote', 'remove', 'r-one');
+    gitC2('remote', 'remove', 'r-two');
+    fs.rmSync(bareA, { recursive: true, force: true });
+    fs.rmSync(bareB, { recursive: true, force: true });
+    fs.rmSync(scratch, { recursive: true, force: true });
+
     console.log(`\n${results.length} integration checks passed`);
   } catch (err) {
     console.error('Integration failure:', err instanceof Error ? err.stack : JSON.stringify(err));

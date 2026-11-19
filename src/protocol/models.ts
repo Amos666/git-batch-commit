@@ -52,7 +52,6 @@ export interface CommitRequest {
   amend?: boolean;
   signoff?: boolean;
   noVerify?: boolean;
-  pushAfter?: boolean;
   /** repo-relative paths expected to be staged; validated before commit */
   expectedStaged?: Record<string, string[]>;
 }
@@ -175,7 +174,47 @@ export interface CommitOptionsV2 {
   signoff?: boolean;
   noVerify?: boolean;
   author?: CommitAuthor;
-  pushAfter?: boolean;
+}
+
+export interface PushTarget {
+  remote: string;
+  branch: string;
+}
+
+export interface PushRunRequest {
+  repoIds: string[];
+  /** explicit targets for roots without upstream (remote chosen in the Push dialog) */
+  targets?: Record<string, PushTarget>;
+  tags?: boolean;
+  /** force-with-lease */
+  force?: boolean;
+}
+
+export interface PushRunResult {
+  repoId: string;
+  ok: boolean;
+  skipped?: 'cancelled';
+  error?: import('./errors').ProtocolError;
+}
+
+export interface PushPreviewCommit {
+  hash: string;
+  message: string;
+  authorName?: string;
+  /** epoch ms */
+  authorDate?: number;
+}
+
+export interface PushPreviewEntry {
+  repoId: string;
+  branch?: string;
+  upstream?: string;
+  ahead?: number;
+  remotes: string[];
+  commits: PushPreviewCommit[];
+  hasMore: boolean;
+  /** kernel lacks log capability */
+  previewUnavailable?: boolean;
 }
 
 export interface CommitRequestV2 {

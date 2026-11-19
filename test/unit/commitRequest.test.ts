@@ -10,13 +10,12 @@ describe('normalizeCommitRequest (v1 webview compat)', () => {
       amend: true,
       signoff: true,
       noVerify: false,
-      pushAfter: true,
       expectedStaged: { r1: ['a.txt'] },
     });
     expect(req).toEqual({
       repoIds: ['r1'],
       message: 'legacy',
-      options: { amend: true, signoff: true, noVerify: false, pushAfter: true },
+      options: { amend: true, signoff: true, noVerify: false },
       expectedStaged: { r1: ['a.txt'] },
     });
   });
@@ -33,7 +32,7 @@ describe('normalizeCommitRequest (v1 webview compat)', () => {
 
   it('defaults missing legacy flags to undefined (kernel treats them as off)', () => {
     const req = normalizeCommitRequest({ repoIds: ['r1'], message: 'plain' });
-    expect(req.options).toEqual({ amend: undefined, signoff: undefined, noVerify: undefined, pushAfter: undefined });
+    expect(req.options).toEqual({ amend: undefined, signoff: undefined, noVerify: undefined });
     expect(req.expectedStaged).toBeUndefined();
     expect(req.expectedIncluded).toBeUndefined();
   });

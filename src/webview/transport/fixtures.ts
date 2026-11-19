@@ -233,6 +233,17 @@ export function defaultHandlers(emit: Emit): MemoryHandlers {
     'branch.compare': async () => {},
     'repo.pull': async () => {},
     'repo.push': async () => {},
+    'push.preview': async (params) =>
+      params.repoIds.map((repoId) => ({
+        repoId,
+        branch: 'main',
+        upstream: 'origin/main',
+        ahead: 1,
+        remotes: ['origin'],
+        commits: [{ hash: 'e'.repeat(40), message: 'Demo outgoing commit', authorName: 'Demo Dev', authorDate: Date.now() }],
+        hasMore: false,
+      })),
+    'push.run': async (params) => params.repoIds.map((repoId) => ({ repoId, ok: true })),
     'log.list': async () => ({
       entries: [
         { hash: 'd'.repeat(40), message: 'Initial commit', authorName: 'Demo Dev', authorDate: Date.now() - 86_400_000 },

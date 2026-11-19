@@ -55,7 +55,7 @@ export function createStore(transport: Transport): PanelStoreInstance {
         void s.commit({ pushAfter: true });
         break;
       case 'push':
-        s.requestPush(s.repoOrder.filter((id) => s.repos[id]?.branch.oid));
+        s.requestPush([]);
         break;
       case 'diff': {
         const first = refs[0];

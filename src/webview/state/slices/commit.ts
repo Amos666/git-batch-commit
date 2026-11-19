@@ -89,7 +89,7 @@ export const commitSlice: Slice = (set, get, ctx) => {
     }
   };
 
-  const doCommit = async (opts: { pushAfter?: boolean; noVerify?: boolean } | undefined): Promise<void> => {
+  const doCommit = async (opts: { noVerify?: boolean } | undefined): Promise<void> => {
     const s = get();
     const included = includedByRepo(s);
     let repoIds = Object.keys(included).filter((id) => (included[id] as IncludedEntry[]).length > 0);
@@ -119,7 +119,6 @@ export const commitSlice: Slice = (set, get, ctx) => {
         signoff: s.optionsState.signoff || undefined,
         noVerify: (opts?.noVerify ?? !s.optionsState.runHooks) || undefined,
         author,
-        pushAfter: opts?.pushAfter,
       },
     };
     if (!amend) {
@@ -178,7 +177,7 @@ export const commitSlice: Slice = (set, get, ctx) => {
           }
         }
         if (pushAfter) {
-          get().requestPush(okRepos);
+          get().requestPush(okRepos, allOk);
         }
       }
     } catch (err) {
@@ -294,7 +293,7 @@ export const commitSlice: Slice = (set, get, ctx) => {
         }
       }
       pendingPushAfter = opts?.pushAfter ?? false;
-      await doCommit({ ...opts, pushAfter: undefined });
+      await doCommit({ noVerify: opts?.noVerify });
     },
 
     cancelRemaining: () => {

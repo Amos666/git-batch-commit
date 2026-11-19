@@ -109,6 +109,8 @@ export interface KernelStash {
 export interface KernelRepoState {
   HEAD: KernelBranch | undefined;
   refs: KernelRef[];
+  /** configured remotes (git config), even before any fetch created tracking refs */
+  remotes: { name: string }[];
   mergeChanges: KernelChange[];
   indexChanges: KernelChange[];
   workingTreeChanges: KernelChange[];
