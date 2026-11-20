@@ -302,6 +302,11 @@ execFileSync('git', ['init', '--bare', '-b', 'main', bareA], { stdio: 'pipe' });
 execFileSync('git', ['init', '--bare', '-b', 'main', bareB], { stdio: 'pipe' });
 gitA('remote', 'add', 'walk-origin', bareA);
 gitB('remote', 'add', 'walk-origin', bareB);
+// the Commit toolbar Push button (left of View Options) opens the same dialog
+await clickTestId(ev, 'tool-push');
+check('toolbar Push button opens the Push dialog', await waitFor(() => has('dialog-push')));
+await clickTestId(ev, 'dialog-close');
+await sleep(300);
 // After a dialog closes, focus can fall back to the workbench: re-focus inside the
 // webview (then blur the textarea) so the panel keymap receives the push chord.
 const pushChord = async () => {
@@ -327,6 +332,11 @@ const clickRepoACommit = async (msg) => {
   return found;
 };
 // vscode.git observes new remotes asynchronously: retry the dialog until the preview sees them
+const openRepoATarget = () => ev(`(doc) => {
+  const row = Array.from(doc.querySelectorAll('[data-testid="push-repo"]')).find(r => (r.innerText || '').includes('repoA'));
+  row?.querySelector('[data-testid="push-target"]')?.click();
+  return true;
+}`);
 const repoARemoteVisible = () => ev(`(doc) => {
   const row = Array.from(doc.querySelectorAll('[data-testid="push-repo"]')).find(r => (r.innerText || '').includes('repoA'));
   return Array.from(row?.querySelector('[data-testid="push-remote"]')?.options ?? []).some(o => o.value === 'walk-origin');
@@ -335,6 +345,7 @@ let remotesSeen = false;
 for (let i = 0; i < 6 && !remotesSeen; i++) {
   await pushChord();
   await waitFor(() => has('dialog-push'));
+  await openRepoATarget();
   remotesSeen = await waitFor(repoARemoteVisible, 10000);
   if (!remotesSeen) {
     await clickTestId(ev, 'dialog-close');
@@ -342,6 +353,35 @@ for (let i = 0; i < 6 && !remotesSeen; i++) {
   }
 }
 check('push preview sees freshly added remotes', remotesSeen);
+// IDEA-style editable target: the remote/branch link opens an editor for any root
+check('target editor exposes remote + branch fields', await ev(`(doc) => {
+  const row = Array.from(doc.querySelectorAll('[data-testid="push-repo"]')).find(r => (r.innerText || '').includes('repoA'));
+  return !!row?.querySelector('[data-testid="push-remote"]') && !!row?.querySelector('[data-testid="push-branch"]');
+}`));
+await ev(`(doc) => {
+  const row = Array.from(doc.querySelectorAll('[data-testid="push-repo"]')).find(r => (r.innerText || '').includes('repoA'));
+  const input = row?.querySelector('[data-testid="push-branch"]');
+  if (input) {
+    const set = Object.getOwnPropertyDescriptor(doc.defaultView.HTMLInputElement.prototype, 'value').set;
+    set.call(input, 'walk-target');
+    input.dispatchEvent(new doc.defaultView.Event('input', { bubbles: true }));
+  }
+}`);
+check('editing the branch updates the target link', await waitFor(() => ev(`(doc) => {
+  const row = Array.from(doc.querySelectorAll('[data-testid="push-repo"]')).find(r => (r.innerText || '').includes('repoA'));
+  return (row?.querySelector('[data-testid="push-target"]')?.textContent ?? '').includes('walk-target');
+}`)));
+// restore the default branch so the batch push below targets main
+await ev(`(doc) => {
+  const row = Array.from(doc.querySelectorAll('[data-testid="push-repo"]')).find(r => (r.innerText || '').includes('repoA'));
+  const input = row?.querySelector('[data-testid="push-branch"]');
+  if (input) {
+    const set = Object.getOwnPropertyDescriptor(doc.defaultView.HTMLInputElement.prototype, 'value').set;
+    set.call(input, 'main');
+    input.dispatchEvent(new doc.defaultView.Event('input', { bubbles: true }));
+  }
+  row?.querySelector('[data-testid="push-target-done"]')?.click();
+}`);
 await clickTestId(ev, 'dialog-close');
 await sleep(300);
 check('Commit and Push button visible', await has('commit-push-button'));

@@ -183,7 +183,14 @@ export const STYLES = `
 .gbc-pushlist { list-style: none; margin: 4px 0; padding: 0; max-height: 320px; overflow: auto; }
 .gbc-pushlist > li { padding: 2px 0; border-bottom: 1px solid var(--gbc-border); }
 .gbc-pushrow { display: flex; align-items: center; gap: 6px; min-height: 24px; }
-.gbc-pushref { color: var(--gbc-fg-muted); font-size: var(--gbc-font-size-small); overflow: hidden; text-overflow: ellipsis; }
+.gbc-pushref { display: inline-flex; align-items: center; gap: 2px; min-width: 0; color: var(--gbc-fg-muted); font-size: var(--gbc-font-size-small); }
+.gbc-pushtarget { background: none; border: none; padding: 0 2px; font: inherit; color: var(--gbc-link); cursor: pointer; border-radius: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 220px; }
+.gbc-pushtarget:hover { text-decoration: underline; }
+.gbc-pushtarget:disabled { cursor: default; color: var(--gbc-fg-muted); }
+.gbc-pushtarget-on, .gbc-pushtarget-on:hover { background: var(--gbc-selection); color: var(--gbc-selection-fg); text-decoration: none; }
+.gbc-pushtarget-edit { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 4px 0 4px 40px; }
+.gbc-pushtarget-field { display: inline-flex; align-items: center; gap: 4px; font-size: var(--gbc-font-size-small); color: var(--gbc-fg-muted); }
+.gbc-pushbranch { width: 140px; }
 .gbc-pushremote { max-width: 120px; }
 .gbc-pushstate { display: inline-flex; width: 16px; flex: none; margin-left: auto; }
 .gbc-push-note { color: var(--gbc-warn-border); font-size: var(--gbc-font-size-small); padding-left: 40px; }

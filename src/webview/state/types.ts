@@ -71,8 +71,10 @@ export type Dialog =
       repoIds: string[];
       checked: Record<string, boolean>;
       expanded: Record<string, boolean>;
-      /** repoId → remote for roots without upstream */
+      /** repoId → remote override for the push target (any root) */
       remoteChoice: Record<string, string>;
+      /** repoId → remote branch override for the push target (any root) */
+      branchChoice: Record<string, string>;
       preview: Record<string, PushPreviewEntry>;
       previewLoading: boolean;
       results: Record<string, PushRunResult>;
@@ -258,6 +260,7 @@ export interface PanelStore {
   togglePushRepo: (repoId: string) => void;
   togglePushExpand: (repoId: string) => void;
   setPushRemote: (repoId: string, remote: string) => void;
+  setPushBranch: (repoId: string, branch: string) => void;
   setPushTags: (tags: boolean) => void;
   requestForcePush: () => void;
   cancelForcePush: () => void;

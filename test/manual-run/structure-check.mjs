@@ -12,12 +12,16 @@ const { cdp, ev } = await panel('commit-panel');
 const tabs = await ev(`(doc) => Array.from(doc.querySelectorAll('[data-testid="tabbar"] [role="tab"]')).map(t => t.textContent.trim())`);
 check('tab order Commit | Shelf | Stash', JSON.stringify(tabs) === JSON.stringify([STRINGS.tabs.commit, STRINGS.tabs.shelf, STRINGS.tabs.stash]));
 
-// 2) toolbar button order (IDEA): Refresh, Rollback, Shelve Changes, Show Diff, Move | View Options, Expand, Collapse
+// 2) toolbar button order (IDEA + Push entry): Refresh, Rollback, Shelve Changes, Show Diff, Move | Push, View Options, Expand, Collapse
 const toolbar = await ev(`(doc) => Array.from(doc.querySelectorAll('[data-testid="toolbar"] button')).map(b => b.getAttribute('data-testid'))`);
-const expectedToolbar = ['tool-refresh', 'tool-rollback', 'tool-shelve', 'tool-diff', 'tool-move', 'tool-viewoptions', 'tool-expand', 'tool-collapse'];
-check('toolbar order matches IDEA (changelist mode)', JSON.stringify(toolbar.slice(0, 8)) === JSON.stringify(expectedToolbar));
+const expectedToolbar = ['tool-refresh', 'tool-rollback', 'tool-shelve', 'tool-diff', 'tool-move', 'tool-push', 'tool-viewoptions', 'tool-expand', 'tool-collapse'];
+check('toolbar order matches IDEA (changelist mode)', JSON.stringify(toolbar.slice(0, 9)) === JSON.stringify(expectedToolbar));
 const toolbarLabels = await ev(`(doc) => Array.from(doc.querySelectorAll('[data-testid="toolbar"] button')).slice(0, 5).map(b => b.getAttribute('aria-label'))`);
 check('toolbar labels come from STRINGS', JSON.stringify(toolbarLabels) === JSON.stringify([STRINGS.toolbar.refresh, STRINGS.toolbar.rollback, STRINGS.toolbar.shelve, STRINGS.toolbar.showDiff, STRINGS.toolbar.move]));
+check('Push toolbar button sits left of View Options', await ev(`(doc) => {
+  const btns = Array.from(doc.querySelectorAll('[data-testid="toolbar"] button')).map(b => b.getAttribute('data-testid'));
+  return btns.indexOf('tool-push') === btns.indexOf('tool-viewoptions') - 1;
+}`));
 
 // 3) changelist tree: default "Changes" list + Unversioned Files group
 check('default changelist header rendered', await ev(`(doc) => !!doc.querySelector('[data-testid="changelist-default"]')`));

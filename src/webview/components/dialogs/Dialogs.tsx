@@ -1,7 +1,8 @@
-import type { ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
 import type { ChangelistFileRef, PushPreviewCommit, PushPreviewEntry } from '../../../protocol/models';
 import { STRINGS } from '../../strings/en';
 import { usePanelStore } from '../../state/StoreContext';
+import { pushTargetFor } from '../../state/slices/branch';
 import type { Dialog } from '../../state/types';
 import { Icon } from '../../theme/icons/Icon';
 import { Checkbox, SplitButton } from '../primitives';
@@ -497,6 +498,7 @@ function PushDialog({ dialog }: { dialog: Extract<Dialog, { kind: 'push' }> }) {
   const togglePushRepo = usePanelStore((s) => s.togglePushRepo);
   const togglePushExpand = usePanelStore((s) => s.togglePushExpand);
   const setPushRemote = usePanelStore((s) => s.setPushRemote);
+  const setPushBranch = usePanelStore((s) => s.setPushBranch);
   const setPushTags = usePanelStore((s) => s.setPushTags);
   const requestForcePush = usePanelStore((s) => s.requestForcePush);
   const cancelForcePush = usePanelStore((s) => s.cancelForcePush);
@@ -504,6 +506,7 @@ function PushDialog({ dialog }: { dialog: Extract<Dialog, { kind: 'push' }> }) {
   const retryPushRepo = usePanelStore((s) => s.retryPushRepo);
   const selectPushFiles = usePanelStore((s) => s.selectPushFiles);
   const cancelRemaining = usePanelStore((s) => s.cancelRemaining);
+  const [targetEdit, setTargetEdit] = useState<string | null>(null);
   const selected = dialog.repoIds.filter((id) => dialog.checked[id]);
   const results = Object.values(dialog.results);
   const pushed = results.filter((r) => r.ok).length;
@@ -580,6 +583,8 @@ function PushDialog({ dialog }: { dialog: Extract<Dialog, { kind: 'push' }> }) {
           const pushing = operations[id]?.phase === 'pushing';
           const expanded = !!dialog.expanded[id];
           const remotes = entry?.remotes ?? [];
+          const target = pushTargetFor(dialog, id, status, entry);
+          const editingTarget = targetEdit === id;
           return (
             <li key={id} data-repo={id} data-testid="push-repo">
               <div className="gbc-pushrow">
@@ -609,27 +614,19 @@ function PushDialog({ dialog }: { dialog: Extract<Dialog, { kind: 'push' }> }) {
                 </button>
                 <span className="gbc-pushref">
                   {branch.name}
-                  {branch.upstream ? ` → ${branch.upstream}` : ''}
+                  {' → '}
+                  <button
+                    type="button"
+                    className={editingTarget ? 'gbc-pushtarget gbc-pushtarget-on' : 'gbc-pushtarget'}
+                    data-testid="push-target"
+                    title={D.pushTargetEdit}
+                    disabled={dialogBusy}
+                    onClick={() => setTargetEdit(id)}
+                  >
+                    {target.remote ? `${target.remote}/${target.branch}` : D.pushChooseRemote}
+                  </button>
                 </span>
                 {ahead !== undefined && ahead > 0 && <span className="gbc-ahead">↑{ahead}</span>}
-                {!branch.upstream && (
-                  <select
-                    className="gbc-input gbc-select gbc-pushremote"
-                    data-testid="push-remote"
-                    value={dialog.remoteChoice[id] ?? ''}
-                    disabled={dialogBusy || remotes.length === 0}
-                    onChange={(e) => setPushRemote(id, e.target.value)}
-                  >
-                    <option value="" disabled>
-                      {D.pushChooseRemote}
-                    </option>
-                    {remotes.map((r) => (
-                      <option key={r} value={r}>
-                        {r}
-                      </option>
-                    ))}
-                  </select>
-                )}
                 <span className="gbc-pushstate" data-testid="push-state">
                   {pushing ? (
                     <span className="gbc-spinner" aria-hidden />
@@ -640,6 +637,57 @@ function PushDialog({ dialog }: { dialog: Extract<Dialog, { kind: 'push' }> }) {
                   ) : null}
                 </span>
               </div>
+              {editingTarget && (
+                <div className="gbc-pushtarget-edit" data-testid="push-target-edit">
+                  <label className="gbc-pushtarget-field">
+                    <span>{D.pushTargetRemote}</span>
+                    <select
+                      className="gbc-input gbc-select gbc-pushremote"
+                      data-testid="push-remote"
+                      value={target.remote}
+                      disabled={dialogBusy || remotes.length === 0}
+                      onChange={(e) => setPushRemote(id, e.target.value)}
+                    >
+                      {!target.remote && (
+                        <option value="" disabled>
+                          {D.pushChooseRemote}
+                        </option>
+                      )}
+                      {target.remote && !remotes.includes(target.remote) && (
+                        <option value={target.remote}>{target.remote}</option>
+                      )}
+                      {remotes.map((r) => (
+                        <option key={r} value={r}>
+                          {r}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="gbc-pushtarget-field">
+                    <span>{D.pushTargetBranch}</span>
+                    <input
+                      className="gbc-input gbc-pushbranch"
+                      data-testid="push-branch"
+                      value={target.branch}
+                      disabled={dialogBusy}
+                      onChange={(e) => setPushBranch(id, e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' || e.key === 'Escape') {
+                          setTargetEdit(null);
+                        }
+                      }}
+                    />
+                  </label>
+                  <button
+                    type="button"
+                    className="gbc-btn gbc-btn-sm"
+                    data-testid="push-target-done"
+                    onClick={() => setTargetEdit(null)}
+                  >
+                    {D.pushTargetDone}
+                  </button>
+                </div>
+              )}
               {!branch.upstream && <div className="gbc-push-note">{D.pushNoUpstream}</div>}
               {expanded && (
                 <ul className="gbc-pushcommits" data-testid="push-commits">

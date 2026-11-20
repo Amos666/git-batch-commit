@@ -1,5 +1,5 @@
 import type { ProtocolError } from '../../../protocol/errors';
-import type { PushRunResult, PushTarget } from '../../../protocol/models';
+import type { PushPreviewEntry, PushRunResult, PushTarget, RepoStatus } from '../../../protocol/models';
 import { STRINGS } from '../../strings/en';
 import type { Dialog, PanelStore, SetFn, Slice, SliceCtx } from '../types';
 
@@ -177,6 +177,7 @@ export const branchSlice: Slice = (set, get, ctx) => ({
         checked,
         expanded: {},
         remoteChoice: {},
+        branchChoice: {},
         preview: {},
         previewLoading: true,
         results: {},
@@ -231,6 +232,13 @@ export const branchSlice: Slice = (set, get, ctx) => ({
     const dialog = get().dialog;
     if (dialog?.kind === 'push') {
       set({ dialog: { ...dialog, remoteChoice: { ...dialog.remoteChoice, [repoId]: remote } }, dialogError: undefined });
+    }
+  },
+
+  setPushBranch: (repoId, branch) => {
+    const dialog = get().dialog;
+    if (dialog?.kind === 'push') {
+      set({ dialog: { ...dialog, branchChoice: { ...dialog.branchChoice, [repoId]: branch } }, dialogError: undefined });
     }
   },
 
@@ -346,6 +354,24 @@ function pushFilesKey(repoId: string, hash: string | undefined): string {
 
 type PushDialog = Extract<Dialog, { kind: 'push' }>;
 
+/** Effective push target for a root: user overrides win, then upstream, then the sole remote. */
+export function pushTargetFor(
+  dialog: PushDialog,
+  id: string,
+  status: RepoStatus,
+  entry: PushPreviewEntry | undefined,
+): { remote: string; branch: string } {
+  const upstream = status.branch.upstream;
+  const slash = upstream ? upstream.indexOf('/') : -1;
+  const upRemote = slash > 0 ? upstream!.slice(0, slash) : undefined;
+  const upBranch = slash > 0 ? upstream!.slice(slash + 1) : undefined;
+  const remotes = entry?.remotes ?? [];
+  const only = remotes.length === 1 ? remotes[0] : undefined;
+  const remote = dialog.remoteChoice[id] ?? upRemote ?? only ?? '';
+  const branch = dialog.branchChoice[id] ?? upBranch ?? status.branch.name ?? '';
+  return { remote, branch };
+}
+
 function resolvePushTargets(get: () => PanelStore, dialog: PushDialog, repoIds: string[]): Record<string, PushTarget> | undefined {
   const targets: Record<string, PushTarget> = {};
   for (const id of repoIds) {
@@ -353,20 +379,27 @@ function resolvePushTargets(get: () => PanelStore, dialog: PushDialog, repoIds: 
     if (!status?.branch.name) {
       continue;
     }
-    if (!status.branch.upstream) {
-      const entry = dialog.preview[id];
-      const only = entry?.remotes.length === 1 ? entry.remotes[0] : undefined;
-      const remote = dialog.remoteChoice[id] ?? only;
-      if (!remote) {
-        // Preview remotes can lag behind `git remote add`; with none known, let the
-        // host resolve from live state at push time. Only a known-ambiguous list blocks.
-        if (entry && entry.remotes.length > 1) {
-          return undefined;
-        }
-        continue;
+    const entry = dialog.preview[id];
+    const target = pushTargetFor(dialog, id, status, entry);
+    const upBranch = status.branch.upstream ? status.branch.upstream.slice(status.branch.upstream.indexOf('/') + 1) : undefined;
+    const branch = target.branch.trim() || upBranch || status.branch.name || '';
+    const overridden = dialog.remoteChoice[id] !== undefined || dialog.branchChoice[id] !== undefined;
+    if (status.branch.upstream) {
+      // With an upstream the host pushes to it unless the user edited the target.
+      if (overridden && target.remote) {
+        targets[id] = { remote: target.remote, branch };
       }
-      targets[id] = { remote, branch: status.branch.name };
+      continue;
     }
+    if (!target.remote) {
+      // Preview remotes can lag behind `git remote add`; with none known, let the
+      // host resolve from live state at push time. Only a known-ambiguous list blocks.
+      if (entry && entry.remotes.length > 1) {
+        return undefined;
+      }
+      continue;
+    }
+    targets[id] = { remote: target.remote, branch };
   }
   return targets;
 }

@@ -105,6 +105,32 @@ describe('Push dialog (IDEA semantics)', () => {
     expect(instance.store.getState().dialog).toBeNull();
   });
 
+  it('edits the push target of a root that already has an upstream', async () => {
+    instance.store.getState().requestPush(['r1']);
+    await vi.waitFor(() => expect(dialog().previewLoading).toBe(false));
+    instance.store.getState().setPushRemote('r1', 'backup');
+    instance.store.getState().setPushBranch('r1', 'release');
+    await instance.store.getState().confirmPush();
+    expect(pushRun.mock.calls[0]![0].targets).toEqual({ r1: { remote: 'backup', branch: 'release' } });
+  });
+
+  it('a branch-only override keeps the upstream remote', async () => {
+    instance.store.getState().requestPush(['r1']);
+    await vi.waitFor(() => expect(dialog().previewLoading).toBe(false));
+    instance.store.getState().setPushBranch('r1', 'topic');
+    await instance.store.getState().confirmPush();
+    expect(pushRun.mock.calls[0]![0].targets).toEqual({ r1: { remote: 'origin', branch: 'topic' } });
+  });
+
+  it('a cleared branch field falls back to the upstream branch', async () => {
+    instance.store.getState().requestPush(['r1']);
+    await vi.waitFor(() => expect(dialog().previewLoading).toBe(false));
+    instance.store.getState().setPushRemote('r1', 'backup');
+    instance.store.getState().setPushBranch('r1', '   ');
+    await instance.store.getState().confirmPush();
+    expect(pushRun.mock.calls[0]![0].targets).toEqual({ r1: { remote: 'backup', branch: 'main' } });
+  });
+
   it('a failed repo keeps the dialog open with per-repo results; retry re-pushes only that repo', async () => {
     pushRun.mockImplementation(async (params) =>
       params.repoIds.map((repoId) =>

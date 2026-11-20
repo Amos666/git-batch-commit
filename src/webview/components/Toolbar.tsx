@@ -73,6 +73,7 @@ export function Toolbar() {
         />
       )}
       <span className="gbc-toolbar-spacer" />
+      <IconButton icon="push" label={T.push} testId="tool-push" onClick={() => s.requestPush([])} />
       <div className="gbc-viewoptions" ref={viewRef}>
         <IconButton
           icon="eye"
