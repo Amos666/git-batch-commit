@@ -81,8 +81,11 @@ export async function run(): Promise<void> {
   const hunk = new HunkService(registry, mini);
   const translator = new CommitTranslator(registry, inclusion, hunk, mini);
   const exclusionRequests: string[][] = [];
+  // batch lanes run concurrently; tests that depend on request order pin this to 1
+  let parallelLimit = 4;
   const orchestrator = new BatchOrchestrator(registry, inclusion, translator, tracker, () => ({
     stopOnFirstRepoError: true,
+    maxParallelRepos: parallelLimit,
     confirmIndexExclusion: async (_repoId, paths) => {
       exclusionRequests.push(paths);
       return true;
@@ -206,6 +209,8 @@ export async function run(): Promise<void> {
     ok('amend: message-only rewrite, fresh oid, no staging required');
 
     // 14. cancel-remaining: in-flight slow-hook repo completes, later repos skipped
+    // (pinned to one lane: the assertion is about ordering, which concurrency removes)
+    parallelLimit = 1;
     await inclusion.stage(idC, ['c.txt']);
     await inclusion.stage(idW, ['modified.txt']);
     await waitFor(() => repoC.state.indexChanges.length === 1 && repoW.state.indexChanges.length === 1, 'cancel-test files staged');
@@ -221,6 +226,7 @@ export async function run(): Promise<void> {
     assert.ok(elapsed >= 1800, `slow hook should still run to completion (elapsed=${elapsed}ms)`);
     assert.strictEqual(repoW.state.HEAD?.commit, headWBefore, 'cancelled repo HEAD must not advance');
     ok(`cancel-remaining timing: in-flight completes (${elapsed}ms), later repo skipped`);
+    parallelLimit = 4;
 
     // 15. commit detail view opens via diffBetween (multi-diff or fallback)
     const diff = new EditorBridge(registry);

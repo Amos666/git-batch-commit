@@ -11,6 +11,8 @@ import { pickRemote } from './pushTarget';
 
 export interface OrchestratorOptions {
   stopOnFirstRepoError: boolean;
+  /** repositories committed/pushed at the same time (default 4, clamped 1..8) */
+  maxParallelRepos?: number;
   /** changelist mode: asked before unstaging index entries outside the checked set */
   confirmIndexExclusion?: (repoId: string, paths: string[]) => Promise<boolean>;
   /** changelist mode: post-commit list cleanup */
@@ -40,6 +42,56 @@ export class BatchOrchestrator {
     return this.running;
   }
 
+  private parallelLimit(): number {
+    const n = this.options().maxParallelRepos ?? 4;
+    return Math.max(1, Math.min(8, Math.floor(n)));
+  }
+
+  /**
+   * Lane pool over independent repositories. Lanes check cancel/stop before
+   * grabbing the next item, so in-flight work always finishes and only
+   * not-yet-started repositories are skipped; results keep request order.
+   */
+  private async pool<T>(items: T[], worker: (item: T, index: number) => Promise<void>, stopped: () => boolean): Promise<void> {
+    let next = 0;
+    const lanes = Array.from({ length: Math.min(this.parallelLimit(), items.length) }, async () => {
+      for (;;) {
+        if (this.cancelRemainingFlag || stopped()) {
+          return;
+        }
+        const i = next++;
+        if (i >= items.length) {
+          return;
+        }
+        await worker(items[i]!, i);
+      }
+    });
+    await Promise.all(lanes);
+  }
+
+  /**
+   * Commit order: a repository nested inside another one (submodule / embedded
+   * repository) has to land first, otherwise the parent records the old gitlink
+   * while the child moves HEAD and the translator's race guard rejects it.
+   * Repositories that do not contain each other are independent and share a wave.
+   */
+  private waves<T extends { repoId: string }>(items: T[]): T[][] {
+    const roots = items.map((item) => this.registry.descriptor(item.repoId)?.rootPath.replace(/\/+$/, '') ?? '');
+    const byDepth = items
+      .map((item, i) => ({ item, depth: roots.filter((root, j) => root !== '' && j !== i && roots[i]!.startsWith(`${root}/`)).length }))
+      .sort((a, b) => b.depth - a.depth);
+    const groups = new Map<number, T[]>();
+    for (const entry of byDepth) {
+      const group = groups.get(entry.depth);
+      if (group) {
+        group.push(entry.item);
+      } else {
+        groups.set(entry.depth, [entry.item]);
+      }
+    }
+    return [...groups.entries()].sort((a, b) => b[0] - a[0]).map(([, group]) => group);
+  }
+
   async run(req: CommitRequestV2): Promise<CommitResult[]> {
     if (this.running) {
       throw makeError('GENERIC', 'A commit is already in progress; wait for it to finish');
@@ -49,52 +101,62 @@ export class BatchOrchestrator {
     }
     this.running = true;
     this.cancelRemainingFlag = false;
-    const results: CommitResult[] = [];
+    const slots: (CommitResult | undefined)[] = Array.from({ length: req.repoIds.length });
     let stopped = false;
     try {
-      for (const repoId of req.repoIds) {
-        if (this.cancelRemainingFlag) {
-          results.push({ repoId, ok: false, skipped: 'cancelled', durationMs: 0 });
-          continue;
-        }
-        if (stopped) {
-          results.push({ repoId, ok: false, skipped: 'stopped-after-error', durationMs: 0 });
-          continue;
-        }
-        const result = await this.commitOne(repoId, req);
-        results.push(result);
-        if (!result.ok && this.options().stopOnFirstRepoError) {
-          stopped = true;
+      const lanes = req.repoIds.map((repoId, slot) => ({ repoId, slot }));
+      for (const wave of this.waves(lanes)) {
+        await this.pool(
+          wave,
+          async ({ repoId, slot }) => {
+            const result = await this.commitOne(repoId, req);
+            slots[slot] = result;
+            if (!result.ok && this.options().stopOnFirstRepoError) {
+              stopped = true;
+            }
+          },
+          () => stopped,
+        );
+        if (stopped || this.cancelRemainingFlag) {
+          break;
         }
       }
-      return results;
+      const cancelled = this.cancelRemainingFlag;
+      return slots.map((result, i) =>
+        result ?? {
+          repoId: req.repoIds[i]!,
+          ok: false,
+          skipped: cancelled ? 'cancelled' : 'stopped-after-error',
+          durationMs: 0,
+        },
+      );
     } finally {
       this.running = false;
       this.cancelRemainingFlag = false;
     }
   }
 
-  /** Batch push: per-repo results, a failed repo never aborts the rest (IDEA semantics). */
+  /** Batch push: repositories push concurrently; a failed repo never aborts the rest (IDEA semantics). */
   async runPush(req: PushRunRequest): Promise<PushRunResult[]> {
     if (this.running) {
       throw makeError('GENERIC', 'Another batch operation is in progress; wait for it to finish');
     }
     this.running = true;
     this.cancelRemainingFlag = false;
-    const results: PushRunResult[] = [];
+    const slots: (PushRunResult | undefined)[] = Array.from({ length: req.repoIds.length });
     try {
-      for (const repoId of req.repoIds) {
-        if (this.cancelRemainingFlag) {
-          results.push({ repoId, ok: false, skipped: 'cancelled' });
-          continue;
-        }
-        results.push(await this.pushOne(repoId, req));
-      }
+      await this.pool(
+        req.repoIds,
+        async (repoId, i) => {
+          slots[i] = await this.pushOne(repoId, req);
+        },
+        () => false,
+      );
+      return slots.map((result, i) => result ?? { repoId: req.repoIds[i]!, ok: false, skipped: 'cancelled' });
     } finally {
       this.running = false;
       this.cancelRemainingFlag = false;
     }
-    return results;
   }
 
   private async pushOne(repoId: string, req: PushRunRequest): Promise<PushRunResult> {

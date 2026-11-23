@@ -2,7 +2,7 @@
   "name": "git-batch-commit",
   "displayName": "Git Batch Commit — IDEA-style Commit Panel",
   "description": "Batch-select files, review diffs, stage changes and commit across multiple repositories in an IntelliJ IDEA-style panel for VS Code.",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "publisher": "git-batch-commit-dev",
   "repository": {
     "type": "git",
@@ -207,6 +207,13 @@
           "type": "boolean",
           "default": true,
           "description": "Stop committing remaining repositories when one repository fails."
+        },
+        "gitBatchCommit.commit.maxParallelRepos": {
+          "type": "number",
+          "default": 4,
+          "minimum": 1,
+          "maximum": 8,
+          "description": "Number of repositories committed or pushed at the same time in batch operations."
         },
         "gitBatchCommit.commit.refreshDebounceMs": {
           "type": "number",

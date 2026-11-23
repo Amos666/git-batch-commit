@@ -123,6 +123,7 @@ export class Backend implements vscode.Disposable {
         tracker,
         () => ({
           stopOnFirstRepoError: readSettings().stopOnFirstRepoError,
+          maxParallelRepos: maxParallelRepos(),
           confirmIndexExclusion: (_repoId, paths) => this.confirmIndexExclusion(paths),
           onCommitted: (repoId, req) => {
             const entries = req.expectedIncluded?.[repoId];
@@ -205,7 +206,16 @@ export class Backend implements vscode.Disposable {
     return refs;
   }
 
-  private async confirmIndexExclusion(paths: string[]): Promise<boolean> {
+  private exclusionQueue: Promise<unknown> = Promise.resolve();
+
+  /** Concurrent lanes must not stack modal confirmations; one question at a time. */
+  private confirmIndexExclusion(paths: string[]): Promise<boolean> {
+    const task = this.exclusionQueue.then(() => this.askIndexExclusion(paths));
+    this.exclusionQueue = task.catch(() => undefined);
+    return task;
+  }
+
+  private async askIndexExclusion(paths: string[]): Promise<boolean> {
     if (this.exclusionConfirmedThisSession) {
       return true;
     }
@@ -954,6 +964,10 @@ export function readSettings(): PanelSettings {
 
 function diffThresholdKB(): number {
   return vscode.workspace.getConfiguration('gitBatchCommit.diff').get<number>('largeFileThresholdKB', 2048);
+}
+
+function maxParallelRepos(): number {
+  return vscode.workspace.getConfiguration('gitBatchCommit.commit').get<number>('maxParallelRepos', 4);
 }
 
 const TEMPLATE_CAP = 64 * 1024;
