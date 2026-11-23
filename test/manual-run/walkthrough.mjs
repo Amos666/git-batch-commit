@@ -371,6 +371,11 @@ check('editing the branch updates the target link', await waitFor(() => ev(`(doc
   const row = Array.from(doc.querySelectorAll('[data-testid="push-repo"]')).find(r => (r.innerText || '').includes('repoA'));
   return (row?.querySelector('[data-testid="push-target"]')?.textContent ?? '').includes('walk-target');
 }`)));
+// IDEA semantics: a name that is not on the remote offers creation (empty bare remote → always)
+check('branch editor offers to create a branch missing on the remote', await waitFor(() => ev(`(doc) => {
+  const row = ${pushRepoARow};
+  return !!row?.querySelector('[data-testid="push-branch-new"]');
+}`)));
 // restore the default branch so the batch push below targets main
 await ev(`(doc) => {
   const row = Array.from(doc.querySelectorAll('[data-testid="push-repo"]')).find(r => (r.innerText || '').includes('repoA'));
@@ -439,6 +444,37 @@ check('push dialog closes after successful batch push', await waitFor(async () =
 const bareHead = (bare) => execFileSync('git', ['--git-dir', bare, 'rev-parse', 'main'], { stdio: 'pipe' }).toString().trim();
 check('bare A received the pushed commit', gitA('rev-parse', 'HEAD').toString().trim() === bareHead(bareA));
 check('bare B received the pushed commit (no-upstream auto remote)', gitB('rev-parse', 'HEAD').toString().trim() === bareHead(bareB));
+
+// IDEA remote-branch listing: the target editor suggests branches of the chosen remote
+await pushChord();
+await waitFor(() => has('dialog-push'));
+await openRepoATarget();
+await waitFor(repoARemoteVisible, 10000);
+check('branch editor lists remote branches of the chosen remote', await waitFor(() => ev(`(doc) => {
+  const row = ${pushRepoARow};
+  return Array.from(row?.querySelectorAll('[data-testid="push-branch-option"]') ?? []).some(b => b.textContent === 'main');
+}`)));
+await ev(`(doc) => {
+  const row = ${pushRepoARow};
+  const input = row?.querySelector('[data-testid="push-branch"]');
+  if (input) {
+    const set = Object.getOwnPropertyDescriptor(doc.defaultView.HTMLInputElement.prototype, 'value').set;
+    set.call(input, 'walk-created');
+    input.dispatchEvent(new doc.defaultView.Event('input', { bubbles: true }));
+  }
+}`);
+check('typing filters the list and offers the new branch', await ev(`(doc) => {
+  const row = ${pushRepoARow};
+  const options = Array.from(row?.querySelectorAll('[data-testid="push-branch-option"]') ?? []).map(b => b.textContent);
+  return options.length === 0 && !!row?.querySelector('[data-testid="push-branch-new"]');
+}`));
+await shot(wb, 'w17c-push-branchlist');
+await ev(`(doc) => { ${pushRepoARow}?.querySelector('[data-testid="push-target-done"]')?.click(); }`);
+await checkOnly(['repoA']);
+await clickTestId(ev, 'dialog-ok-main');
+check('push to a new remote branch name completes', await waitFor(async () => !(await has('dialog-push')), 25000));
+const createdHead = execFileSync('git', ['--git-dir', bareA, 'rev-parse', 'refs/heads/walk-created'], { stdio: 'pipe' }).toString().trim();
+check('push created the new remote branch (IDEA semantics)', createdHead === gitA('rev-parse', 'HEAD').toString().trim());
 
 // standalone push: only ahead roots default-checked (ahead propagates asynchronously)
 gitA('commit', '-q', '--allow-empty', '-m', 'walk ahead');

@@ -148,6 +148,7 @@ export interface RequestMap {
   'repo.pull': { params: { repoId: string }; result: void };
   'repo.push': { params: { repoId: string; remote?: string }; result: void };
   'push.preview': { params: { repoIds: string[] }; result: PushPreviewEntry[] };
+  'push.remoteBranches': { params: { repoId: string; remote: string }; result: { branches: string[] } };
   'push.commitFiles': { params: { repoId: string; hash?: string }; result: PushFilesResult };
   'push.fileDiff': { params: { repoId: string; file: PushCommitFile; from: string; to: string }; result: void };
   'push.run': { params: PushRunRequest; result: PushRunResult[] };

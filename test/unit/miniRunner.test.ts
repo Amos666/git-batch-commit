@@ -40,6 +40,24 @@ describe('miniRunner argument whitelist', () => {
     expect(() => buildArgs({ cmd: 'branch-rename', from: 'main', to: '--delete' })).toThrow();
   });
 
+  it('push builds a governed refspec argv', () => {
+    expect(buildArgs({ cmd: 'push', remote: 'origin', refspec: 'main:topic/x', setUpstream: true })).toEqual([
+      'push', '--set-upstream', 'origin', 'main:topic/x',
+    ]);
+    expect(buildArgs({ cmd: 'push', remote: 'origin', refspec: 'main:main', forceWithLease: true, tags: true })).toEqual([
+      'push', '--force-with-lease', '--tags', 'origin', 'main:main',
+    ]);
+  });
+
+  it('push rejects injection attempts in remote/refspec', () => {
+    for (const bad of ['-oProxyCommand=evil', 'a b', 'a\nb', '', 'a:...:b']) {
+      expect(() => buildArgs({ cmd: 'push', remote: bad, refspec: 'main:main' }), `remote ${bad}`).toThrow();
+    }
+    for (const bad of ['--force', 'a..b:main', ':main', 'main:', 'a b:main', 'main:x..y']) {
+      expect(() => buildArgs({ cmd: 'push', remote: 'origin', refspec: bad }), `refspec ${bad}`).toThrow();
+    }
+  });
+
   it('validatePath allows unicode and spaces but not traversal', () => {
     expect(validatePath('中文 文件.txt')).toBe(true);
     expect(validatePath('dir/sub/file.ts')).toBe(true);

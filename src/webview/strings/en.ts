@@ -253,6 +253,7 @@ export const STRINGS = {
     pushTargetBranch: 'Branch',
     pushTargetDone: 'Done',
     pushTargetEdit: 'Edit push target',
+    pushBranchNew: (name: string) => `Create new remote branch "${name}"`,
     pushChooseRemoteFor: (repo: string) => `Choose a remote for ${repo} before pushing`,
     pushNothingSelected: 'Check at least one repository to push',
     pushPreviewUnavailable: 'Commit preview is not supported by the current Git backend',

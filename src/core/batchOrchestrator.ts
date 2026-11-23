@@ -125,8 +125,15 @@ export class BatchOrchestrator {
       }
       const branch = target?.branch ?? head.name;
       const setUpstream = !head.upstream;
-      if ((req.tags || req.force) && repo.pushTo) {
-        await repo.pushTo(remote, branch, setUpstream, req.force ? ForcePushMode.ForceWithLease : undefined, req.tags);
+      if (repo.pushTo) {
+        // refspec local:target pushes the current commit to any remote branch name
+        // (IDEA semantics: renaming/creating the remote branch), instead of
+        // repo.push which can only push a local branch of the same name.
+        await repo.pushTo(remote, `${head.name}:${branch}`, setUpstream, req.force ? ForcePushMode.ForceWithLease : undefined, req.tags);
+      } else if (branch !== head.name) {
+        const error = makeError('GENERIC', `Pushing to remote branch '${branch}' requires a kernel with pushTo support`);
+        this.tracker.end(repoId, 'failed', error.message);
+        return { repoId, ok: false, error };
       } else {
         await repo.push(remote, branch, setUpstream);
       }

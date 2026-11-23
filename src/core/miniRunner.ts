@@ -27,6 +27,7 @@ export type MiniRequest =
   | { cmd: 'git-dir' }
   | { cmd: 'status-porcelain' }
   | { cmd: 'config-get'; key: 'user.name' | 'user.email' }
+  | { cmd: 'push'; remote: string; refspec: string; setUpstream?: boolean; forceWithLease?: boolean; tags?: boolean }
   | { cmd: 'commit'; messageFile: string; authorName?: string; authorEmail?: string; amend?: boolean; signoff?: boolean; noVerify?: boolean };
 
 export interface IndexEntry {
@@ -69,6 +70,10 @@ export function validateBranchName(name: string): boolean {
     !name.endsWith('.lock') &&
     !name.split('/').some((seg) => seg.startsWith('.') || seg.length === 0)
   );
+}
+
+export function validateRemoteName(name: string): boolean {
+  return /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name) && name.length <= 256 && !name.endsWith('.');
 }
 
 export function buildArgs(req: MiniRequest): string[] {
@@ -154,6 +159,27 @@ export function buildArgs(req: MiniRequest): string[] {
         throw makeError('GENERIC', 'Invalid config key');
       }
       return ['config', '--get', req.key];
+    case 'push': {
+      if (!validateRemoteName(req.remote)) {
+        throw makeError('GENERIC', 'Invalid push remote');
+      }
+      const [from, to] = req.refspec.split(':');
+      if (!from || !to || req.refspec.split(':').length !== 2 || !validateBranchName(from) || !validateBranchName(to)) {
+        throw makeError('GENERIC', 'Invalid push refspec');
+      }
+      const args = ['push'];
+      if (req.forceWithLease) {
+        args.push('--force-with-lease');
+      }
+      if (req.setUpstream) {
+        args.push('--set-upstream');
+      }
+      if (req.tags) {
+        args.push('--tags');
+      }
+      args.push(req.remote, `${from}:${to}`);
+      return args;
+    }
     case 'commit': {
       if (!validatePatchPath(req.messageFile)) {
         throw makeError('GENERIC', 'Invalid commit message file path');
@@ -228,8 +254,9 @@ export class MiniRunner {
       req.cmd === 'git-dir' ||
       req.cmd === 'status-porcelain' ||
       req.cmd === 'config-get';
+    const timeoutMs = req.cmd === 'push' ? 120_000 : TIMEOUT_MS;
     const prev = this.queues.get(repoRoot) ?? Promise.resolve();
-    const task = prev.then(() => this.execWithLockRetry(repoRoot, args, readOnly, requestEnv(req)));
+    const task = prev.then(() => this.execWithLockRetry(repoRoot, args, readOnly, requestEnv(req), timeoutMs));
     this.queues.set(
       repoRoot,
       task.catch(() => {}),
@@ -237,11 +264,11 @@ export class MiniRunner {
     return task;
   }
 
-  private async execWithLockRetry(repoRoot: string, args: string[], readOnly: boolean, extraEnv: Record<string, string>): Promise<MiniResult> {
+  private async execWithLockRetry(repoRoot: string, args: string[], readOnly: boolean, extraEnv: Record<string, string>, timeoutMs: number): Promise<MiniResult> {
     let lastErr: ProtocolError | undefined;
     for (let attempt = 0; attempt <= LOCK_RETRIES; attempt++) {
       try {
-        return await this.exec(repoRoot, args, readOnly, extraEnv);
+        return await this.exec(repoRoot, args, readOnly, extraEnv, timeoutMs);
       } catch (err) {
         const pe = err as ProtocolError;
         if (pe.code !== 'LOCKED' || attempt === LOCK_RETRIES) {
@@ -254,7 +281,7 @@ export class MiniRunner {
     throw lastErr ?? makeError('LOCKED', 'Repository is locked');
   }
 
-  private exec(repoRoot: string, args: string[], readOnly: boolean, extraEnv: Record<string, string>): Promise<MiniResult> {
+  private exec(repoRoot: string, args: string[], readOnly: boolean, extraEnv: Record<string, string>, timeoutMs: number): Promise<MiniResult> {
     return new Promise((resolve, reject) => {
       const child = spawn(this.gitPath(), args, {
         cwd: repoRoot,
@@ -272,7 +299,7 @@ export class MiniRunner {
       const timer = setTimeout(() => {
         child.kill('SIGTERM');
         finish(makeError('GENERIC', `git ${args[0]} timed out`));
-      }, TIMEOUT_MS);
+      }, timeoutMs);
       const finish = (err?: ProtocolError, result?: MiniResult) => {
         if (settled) {
           return;
@@ -299,12 +326,27 @@ export class MiniRunner {
           finish(undefined, { stdout: Buffer.concat(stdout), stderr });
           return;
         }
+        const firstLine = stderr.split('\n').find((l) => l.trim().length > 0) ?? `git ${args[0]} failed (exit ${code})`;
+        const detail = firstLine.length > 200 ? `${firstLine.slice(0, 200)}…` : firstLine;
         if (/index\.lock|unable to create.*lock|file exists/i.test(stderr)) {
           finish(makeError('LOCKED', 'Repository index is locked by another Git process', ['retry']));
           return;
         }
-        const firstLine = stderr.split('\n').find((l) => l.trim().length > 0) ?? `git ${args[0]} failed (exit ${code})`;
-        finish(makeError('GENERIC', firstLine.length > 200 ? `${firstLine.slice(0, 200)}…` : firstLine));
+        if (args[0] === 'push') {
+          if (/\[rejected\]|\[remote rejected\]|non-fast-forward/i.test(stderr)) {
+            finish(makeError('PUSH_REJECTED', detail));
+            return;
+          }
+          if (/authentication|permission denied|could not read username|invalid credentials/i.test(stderr)) {
+            finish(makeError('AUTH_FAILED', detail));
+            return;
+          }
+          if (/could not resolve host|failed to connect|connection refused/i.test(stderr)) {
+            finish(makeError('NETWORK', detail));
+            return;
+          }
+        }
+        finish(makeError('GENERIC', detail));
       });
     });
   }

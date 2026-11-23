@@ -650,6 +650,22 @@ export class Backend implements vscode.Disposable {
       }
       return entries;
     });
+    gateway.register('push.remoteBranches', async (params): Promise<{ branches: string[] }> => {
+      const s = await this.ready();
+      const repo = s.registry.get(params.repoId);
+      if (!repo) {
+        throw makeError('NO_REPOSITORY', `Repository not found: ${params.repoId}`);
+      }
+      if (!repo.state.remotes.some((r) => r.name === params.remote)) {
+        throw makeError('NO_REMOTE', `Unknown remote '${params.remote}'`);
+      }
+      const refs = await repo.getBranches({ remote: true });
+      const prefix = `${params.remote}/`;
+      const branches = mapRemoteBranches(refs)
+        .filter((b) => b.remote === params.remote)
+        .map((b) => (b.name.startsWith(prefix) ? b.name.slice(prefix.length) : b.name));
+      return { branches: [...new Set(branches)].sort() };
+    });
     gateway.register('push.commitFiles', async (params): Promise<PushFilesResult> => {
       const s = await this.ready();
       const repo = s.registry.get(params.repoId);

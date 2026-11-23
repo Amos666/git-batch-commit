@@ -252,6 +252,9 @@ export function defaultHandlers(emit: Emit): MemoryHandlers {
         hasMore: false,
         selfAuthor: { name: 'Demo Dev', email: 'demo@example.com' },
       })),
+    'push.remoteBranches': async (params) => ({
+      branches: params.remote === 'origin' ? ['feature/demo', 'main', 'release/1.0'] : [],
+    }),
     'push.commitFiles': async (params) => ({
       from: 'f'.repeat(40),
       to: params.hash ?? 'HEAD',

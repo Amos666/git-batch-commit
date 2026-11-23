@@ -1115,6 +1115,17 @@ export async function run(): Promise<void> {
     assert.notStrictEqual(targeted[0]?.error?.code, 'NO_REMOTE', 'explicit target must bypass remote resolution');
     ok('push target resolution: NO_REMOTE without remotes, ambiguous choice required, explicit target honored');
 
+    // IDEA renamed/new remote branch: the local:target refspec creates the remote
+    // branch; tracking of an existing upstream is left alone
+    const renamedA = await orchestrator.runPush({ repoIds: [idA], targets: { [idA]: { remote: 'push-origin', branch: 'topic/created-a' } } });
+    assert.strictEqual(renamedA[0]?.ok, true, `renamed push A failed: ${JSON.stringify(renamedA[0]?.error)}`);
+    assert.ok(/^[0-9a-f]{40}/.test(gitA('ls-remote', 'push-origin', 'refs/heads/topic/created-a').toString()), 'push-origin must receive topic/created-a');
+    const renamedB = await orchestrator.runPush({ repoIds: [idB], targets: { [idB]: { remote: 'push-origin', branch: 'topic/created-b' } } });
+    assert.strictEqual(renamedB[0]?.ok, true, `renamed push B failed: ${JSON.stringify(renamedB[0]?.error)}`);
+    assert.ok(/^[0-9a-f]{40}/.test(gitB('ls-remote', 'push-origin', 'refs/heads/topic/created-b').toString()), 'push-origin must receive topic/created-b');
+    await waitFor(() => repoA.state.HEAD?.upstream?.remote === 'push-origin' && repoA.state.HEAD?.upstream?.name === 'main', 'repoA tracking unchanged by renamed push');
+    ok('IDEA renamed-branch push: local:target refspec creates remote branches, tracking preserved');
+
     // 50. push files data path: per-commit, outgoing range, root commit; single-file diff opens
     fs.writeFileSync(path.join(repoAPath, 'push-a3.txt'), 'a3\n');
     gitA('add', 'push-a3.txt');

@@ -1,7 +1,9 @@
 import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { acquireGitApi } from '../adapter/gitApi';
+import { ForcePushMode } from '../adapter/gitApiTypes';
 import type { Change, DiffBetweenFile, GitApi, Repository } from '../adapter/gitApiTypes';
+import { makeError } from '../protocol/errors';
 import type { MiniRunner } from '../core/miniRunner';
 import type { KernelCapabilities } from '../protocol/models';
 import { detectCapabilities } from './capabilities';
@@ -52,7 +54,7 @@ class VscodeKernelRepo implements KernelRepo {
   readonly getBranchBase?: KernelRepo['getBranchBase'];
   readonly getMergeBase?: KernelRepo['getMergeBase'];
   readonly pull?: KernelRepo['pull'];
-  readonly pushTo?: KernelRepo['pushTo'];
+  readonly pushTo: KernelRepo['pushTo'];
   readonly branch?: KernelRepo['branch'];
   readonly getRefs?: KernelRepo['getRefs'];
   readonly refresh?: KernelRepo['refresh'];
@@ -86,6 +88,25 @@ class VscodeKernelRepo implements KernelRepo {
     if (repo.pushTo) {
       const fn = repo.pushTo.bind(repo);
       this.pushTo = (remote, refspec, setUpstream, force, tags) => fn(remote, refspec, setUpstream, force as never, tags);
+    } else {
+      // the public git API has no refspec push; route through the governed mini
+      // runner so renamed/new remote branches work identically on route A
+      this.pushTo = async (remote, refspec, setUpstream, force, tags) => {
+        if (force !== undefined && force !== ForcePushMode.ForceWithLease) {
+          throw makeError('CAPABILITY_UNAVAILABLE', 'Plain force push requires a kernel with native pushTo support');
+        }
+        if (!remote || !refspec) {
+          throw makeError('CAPABILITY_UNAVAILABLE', 'A remote and refspec are required for pushTo');
+        }
+        await this.mini.run(this.rootPath, {
+          cmd: 'push',
+          remote,
+          refspec,
+          setUpstream,
+          forceWithLease: force !== undefined,
+          tags,
+        });
+      };
     }
     const passthrough = [
       'getConfig', 'getGlobalConfig', 'hashObject',

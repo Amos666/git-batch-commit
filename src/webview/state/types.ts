@@ -75,6 +75,8 @@ export type Dialog =
       remoteChoice: Record<string, string>;
       /** repoId → remote branch override for the push target (any root) */
       branchChoice: Record<string, string>;
+      /** repoId → remote branches of the remote the editor last loaded (stale entries are ignored) */
+      branchOptions: Record<string, { remote: string; branches: string[] }>;
       preview: Record<string, PushPreviewEntry>;
       previewLoading: boolean;
       results: Record<string, PushRunResult>;
@@ -261,6 +263,7 @@ export interface PanelStore {
   togglePushExpand: (repoId: string) => void;
   setPushRemote: (repoId: string, remote: string) => void;
   setPushBranch: (repoId: string, branch: string) => void;
+  loadPushBranches: (repoId: string, remote: string) => void;
   setPushTags: (tags: boolean) => void;
   requestForcePush: () => void;
   cancelForcePush: () => void;

@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import type { ChangelistFileRef, PushPreviewCommit, PushPreviewEntry } from '../../../protocol/models';
 import { STRINGS } from '../../strings/en';
 import { usePanelStore } from '../../state/StoreContext';
@@ -505,6 +505,7 @@ function PushDialog({ dialog }: { dialog: Extract<Dialog, { kind: 'push' }> }) {
   const confirmForcePush = usePanelStore((s) => s.confirmForcePush);
   const retryPushRepo = usePanelStore((s) => s.retryPushRepo);
   const selectPushFiles = usePanelStore((s) => s.selectPushFiles);
+  const loadPushBranches = usePanelStore((s) => s.loadPushBranches);
   const cancelRemaining = usePanelStore((s) => s.cancelRemaining);
   const [targetEdit, setTargetEdit] = useState<string | null>(null);
   const selected = dialog.repoIds.filter((id) => dialog.checked[id]);
@@ -638,55 +639,17 @@ function PushDialog({ dialog }: { dialog: Extract<Dialog, { kind: 'push' }> }) {
                 </span>
               </div>
               {editingTarget && (
-                <div className="gbc-pushtarget-edit" data-testid="push-target-edit">
-                  <label className="gbc-pushtarget-field">
-                    <span>{D.pushTargetRemote}</span>
-                    <select
-                      className="gbc-input gbc-select gbc-pushremote"
-                      data-testid="push-remote"
-                      value={target.remote}
-                      disabled={dialogBusy || remotes.length === 0}
-                      onChange={(e) => setPushRemote(id, e.target.value)}
-                    >
-                      {!target.remote && (
-                        <option value="" disabled>
-                          {D.pushChooseRemote}
-                        </option>
-                      )}
-                      {target.remote && !remotes.includes(target.remote) && (
-                        <option value={target.remote}>{target.remote}</option>
-                      )}
-                      {remotes.map((r) => (
-                        <option key={r} value={r}>
-                          {r}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <label className="gbc-pushtarget-field">
-                    <span>{D.pushTargetBranch}</span>
-                    <input
-                      className="gbc-input gbc-pushbranch"
-                      data-testid="push-branch"
-                      value={target.branch}
-                      disabled={dialogBusy}
-                      onChange={(e) => setPushBranch(id, e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter' || e.key === 'Escape') {
-                          setTargetEdit(null);
-                        }
-                      }}
-                    />
-                  </label>
-                  <button
-                    type="button"
-                    className="gbc-btn gbc-btn-sm"
-                    data-testid="push-target-done"
-                    onClick={() => setTargetEdit(null)}
-                  >
-                    {D.pushTargetDone}
-                  </button>
-                </div>
+                <PushTargetEditor
+                  id={id}
+                  target={target}
+                  remotes={remotes}
+                  busy={dialogBusy}
+                  options={dialog.branchOptions[id]}
+                  onRemote={(r) => setPushRemote(id, r)}
+                  onBranch={(b) => setPushBranch(id, b)}
+                  onDone={() => setTargetEdit(null)}
+                  onLoad={(remote) => loadPushBranches(id, remote)}
+                />
               )}
               {!branch.upstream && <div className="gbc-push-note">{D.pushNoUpstream}</div>}
               {expanded && (
@@ -756,6 +719,111 @@ function PushDialog({ dialog }: { dialog: Extract<Dialog, { kind: 'push' }> }) {
         </div>
       )}
     </Shell>
+  );
+}
+
+function PushTargetEditor({
+  id,
+  target,
+  remotes,
+  busy,
+  options,
+  onRemote,
+  onBranch,
+  onDone,
+  onLoad,
+}: {
+  id: string;
+  target: { remote: string; branch: string };
+  remotes: string[];
+  busy: boolean;
+  options: { remote: string; branches: string[] } | undefined;
+  onRemote: (remote: string) => void;
+  onBranch: (branch: string) => void;
+  onDone: () => void;
+  onLoad: (remote: string) => void;
+}) {
+  useEffect(() => {
+    if (target.remote) {
+      onLoad(target.remote);
+    }
+    // reload only on remote change; onLoad/onRemote/onBranch are stable store actions
+  }, [id, target.remote]);
+  const loaded = !!options && options.remote === target.remote;
+  const branches = loaded ? options.branches : [];
+  const query = target.branch.trim();
+  const lower = query.toLowerCase();
+  const matches = lower ? branches.filter((b) => b.toLowerCase().includes(lower)) : branches;
+  const exact = !!query && branches.some((b) => b.toLowerCase() === lower);
+  const showList = loaded && (matches.length > 0 || (!!query && !exact));
+  return (
+    <div className="gbc-pushtarget-edit" data-testid="push-target-edit">
+      <label className="gbc-pushtarget-field">
+        <span>{D.pushTargetRemote}</span>
+        <select
+          className="gbc-input gbc-select gbc-pushremote"
+          data-testid="push-remote"
+          value={target.remote}
+          disabled={busy || remotes.length === 0}
+          onChange={(e) => onRemote(e.target.value)}
+        >
+          {!target.remote && (
+            <option value="" disabled>
+              {D.pushChooseRemote}
+            </option>
+          )}
+          {target.remote && !remotes.includes(target.remote) && (
+            <option value={target.remote}>{target.remote}</option>
+          )}
+          {remotes.map((r) => (
+            <option key={r} value={r}>
+              {r}
+            </option>
+          ))}
+        </select>
+      </label>
+      <div className="gbc-pushtarget-field gbc-branchcombo">
+        <span>{D.pushTargetBranch}</span>
+        <input
+          className="gbc-input gbc-pushbranch"
+          data-testid="push-branch"
+          value={target.branch}
+          disabled={busy}
+          onChange={(e) => onBranch(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === 'Escape') {
+              onDone();
+            }
+          }}
+        />
+        {showList && (
+          <ul className="gbc-branchlist" data-testid="push-branch-list">
+            {matches.map((b) => (
+              <li key={b}>
+                <button type="button" data-testid="push-branch-option" onClick={() => onBranch(b)}>
+                  {b}
+                </button>
+              </li>
+            ))}
+            {!!query && !exact && (
+              <li>
+                <button type="button" className="gbc-branchnew" data-testid="push-branch-new" onClick={onDone}>
+                  {D.pushBranchNew(query)}
+                </button>
+              </li>
+            )}
+          </ul>
+        )}
+      </div>
+      <button
+        type="button"
+        className="gbc-btn gbc-btn-sm"
+        data-testid="push-target-done"
+        onClick={onDone}
+      >
+        {D.pushTargetDone}
+      </button>
+    </div>
   );
 }
 

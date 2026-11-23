@@ -271,4 +271,30 @@ describe('Push dialog (IDEA semantics)', () => {
     await instance.store.getState().openPushFileDiff(file);
     expect(pushFileDiff).toHaveBeenCalledWith({ repoId: 'r1', file, from: 'c'.repeat(40), to: hash });
   });
+
+  it('loadPushBranches caches the remote branch list tagged with its remote', async () => {
+    instance.store.getState().requestPush(['r1']);
+    await vi.waitFor(() => expect(dialog().previewLoading).toBe(false));
+    const remoteBranches = vi.fn(async (params: { repoId: string; remote: string }) =>
+      params.remote === 'backup' ? { branches: ['backup-main'] } : { branches: ['main', 'release'] },
+    );
+    transport.handlers['push.remoteBranches'] = remoteBranches;
+    instance.store.getState().loadPushBranches('r1', 'origin');
+    await vi.waitFor(() => expect(dialog().branchOptions.r1).toEqual({ remote: 'origin', branches: ['main', 'release'] }));
+    instance.store.getState().loadPushBranches('r1', 'backup');
+    await vi.waitFor(() => expect(dialog().branchOptions.r1).toEqual({ remote: 'backup', branches: ['backup-main'] }));
+    expect(remoteBranches).toHaveBeenCalledWith({ repoId: 'r1', remote: 'backup' });
+  });
+
+  it('a remoteBranches failure keeps the editor usable as a free input', async () => {
+    instance.store.getState().requestPush(['r1']);
+    await vi.waitFor(() => expect(dialog().previewLoading).toBe(false));
+    transport.handlers['push.remoteBranches'] = async () => {
+      throw { code: 'GENERIC', message: 'not listed' };
+    };
+    instance.store.getState().loadPushBranches('r1', 'origin');
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(dialog().branchOptions.r1).toBeUndefined();
+    expect(instance.store.getState().dialog?.kind).toBe('push');
+  });
 });

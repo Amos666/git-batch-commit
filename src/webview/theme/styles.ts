@@ -192,6 +192,11 @@ export const STYLES = `
 .gbc-pushtarget-field { display: inline-flex; align-items: center; gap: 4px; font-size: var(--gbc-font-size-small); color: var(--gbc-fg-muted); }
 .gbc-pushbranch { width: 140px; }
 .gbc-pushremote { max-width: 120px; }
+.gbc-branchcombo { position: relative; }
+.gbc-branchlist { position: absolute; top: 100%; left: 0; margin: 2px 0 0; padding: 2px; min-width: 180px; max-height: 168px; overflow-y: auto; list-style: none; background: var(--gbc-menu-bg, var(--vscode-editorWidget-background, var(--gbc-bg))); border: 1px solid var(--gbc-border); border-radius: 4px; box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3); z-index: 30; }
+.gbc-branchlist li button { display: block; width: 100%; border: none; background: none; padding: 3px 8px; font: inherit; font-size: var(--gbc-font-size-small); color: var(--gbc-fg); text-align: left; cursor: pointer; border-radius: 3px; white-space: nowrap; }
+.gbc-branchlist li button:hover { background: var(--gbc-selection); color: var(--gbc-selection-fg); }
+.gbc-branchlist li .gbc-branchnew { color: var(--gbc-fg-muted); font-style: italic; }
 .gbc-pushstate { display: inline-flex; width: 16px; flex: none; margin-left: auto; }
 .gbc-push-note { color: var(--gbc-warn-border); font-size: var(--gbc-font-size-small); padding-left: 40px; }
 .gbc-pushcommits { list-style: none; margin: 2px 0 4px; padding: 0 0 0 40px; max-height: 160px; overflow: auto; }

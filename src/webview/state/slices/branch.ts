@@ -178,6 +178,7 @@ export const branchSlice: Slice = (set, get, ctx) => ({
         expanded: {},
         remoteChoice: {},
         branchChoice: {},
+        branchOptions: {},
         preview: {},
         previewLoading: true,
         results: {},
@@ -240,6 +241,24 @@ export const branchSlice: Slice = (set, get, ctx) => ({
     if (dialog?.kind === 'push') {
       set({ dialog: { ...dialog, branchChoice: { ...dialog.branchChoice, [repoId]: branch } }, dialogError: undefined });
     }
+  },
+
+  loadPushBranches: (repoId, remote) => {
+    if (!remote) {
+      return;
+    }
+    void (async () => {
+      try {
+        const { branches } = await ctx.request('push.remoteBranches', { repoId, remote });
+        const dialog = get().dialog;
+        if (dialog?.kind !== 'push') {
+          return;
+        }
+        set({ dialog: { ...dialog, branchOptions: { ...dialog.branchOptions, [repoId]: { remote, branches } } } });
+      } catch {
+        // suggestion list is optional; the editor stays a free input
+      }
+    })();
   },
 
   setPushTags: (tags) => {
